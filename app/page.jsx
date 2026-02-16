@@ -2,6 +2,36 @@
 
 import { useMemo, useState } from "react";
 
+function Pill({ active, children }) {
+  return (
+    <span
+      className={[
+        "inline-flex items-center rounded-full px-3 py-1 text-xs font-medium",
+        active
+          ? "bg-zinc-900 text-white"
+          : "bg-white/70 text-zinc-700 ring-1 ring-zinc-200 hover:bg-white",
+      ].join(" ")}
+    >
+      {children}
+    </span>
+  );
+}
+
+function Card({ title, subtitle, children, right }) {
+  return (
+    <div className="rounded-2xl bg-white/70 p-5 shadow-sm ring-1 ring-zinc-200 backdrop-blur">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-sm font-semibold text-zinc-900">{title}</h2>
+          {subtitle && <p className="mt-1 text-sm text-zinc-500">{subtitle}</p>}
+        </div>
+        {right ? <div className="shrink-0">{right}</div> : null}
+      </div>
+      <div className="mt-4">{children}</div>
+    </div>
+  );
+}
+
 export default function Home() {
   const tasks = useMemo(
     () => [
@@ -24,19 +54,25 @@ export default function Home() {
     []
   );
 
+  const industries = ["Finance", "Healthcare", "Tech", "Education", "Operations", "Other"];
+  const seniorities = ["Entry", "Mid", "Senior", "Manager", "Executive"];
+
   const [jobTitle, setJobTitle] = useState("");
   const [industry, setIndustry] = useState("");
   const [seniority, setSeniority] = useState("");
   const [jobDesc, setJobDesc] = useState("");
   const [selectedTasks, setSelectedTasks] = useState([]);
   const [loading, setLoading] = useState(false);
+
   const [report, setReport] = useState(null);
   const [error, setError] = useState("");
 
   const toggleTask = (t) => {
-    setSelectedTasks((prev) =>
-      prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]
-    );
+    setSelectedTasks((prev) => {
+      if (prev.includes(t)) return prev.filter((x) => x !== t);
+      if (prev.length >= 8) return prev; // hard cap
+      return [...prev, t];
+    });
   };
 
   const canGenerate =
@@ -64,10 +100,7 @@ export default function Home() {
       });
 
       const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data?.error || "Failed to generate report");
-      }
+      if (!res.ok) throw new Error(data?.error || "Failed to generate report");
 
       setReport(data);
       document.getElementById("report")?.scrollIntoView({ behavior: "smooth" });
@@ -78,29 +111,45 @@ export default function Home() {
     }
   };
 
+  const handleReset = () => {
+    setJobTitle("");
+    setIndustry("");
+    setSeniority("");
+    setJobDesc("");
+    setSelectedTasks([]);
+    setReport(null);
+    setError("");
+  };
+
   return (
-    <main className="min-h-screen bg-red-600 text-white p-10">
-      {/* Top bar */}
-      <header className="border-b bg-white">
-        <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-4">
-          <div>
-            <h1 className="text-xl font-semibold tracking-tight">NSFAI</h1>
-            <p className="text-sm text-zinc-500">
-              AI displacement risk for a role — based on tasks, not titles.
-            </p>
+    <main className="min-h-screen bg-gradient-to-b from-zinc-50 via-white to-zinc-50 text-zinc-900">
+      {/* top glow */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-64 bg-[radial-gradient(ellipse_at_top,rgba(0,0,0,0.08),transparent_60%)]" />
+
+      <header className="sticky top-0 z-10 border-b border-zinc-200/70 bg-white/70 backdrop-blur">
+        <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4">
+          <div className="flex items-center gap-3">
+            <div className="grid h-10 w-10 place-items-center rounded-2xl bg-zinc-900 text-white shadow-sm">
+              N
+            </div>
+            <div>
+              <h1 className="text-base font-semibold tracking-tight">NSFAI</h1>
+              <p className="text-sm text-zinc-500">
+                AI displacement risk for a role — based on tasks, not titles.
+              </p>
+            </div>
           </div>
 
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
             <a
               href="#report"
-              className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm hover:bg-zinc-50"
+              className="rounded-xl bg-white px-3 py-2 text-sm font-medium text-zinc-800 ring-1 ring-zinc-200 hover:bg-zinc-50"
             >
               Jump to report
             </a>
             <button
-              type="button"
-              className="rounded-lg bg-zinc-900 px-3 py-2 text-sm text-white hover:bg-zinc-800"
-              onClick={() => window.location.reload()}
+              onClick={handleReset}
+              className="rounded-xl bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800"
             >
               Reset
             </button>
@@ -108,156 +157,182 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Content */}
-      <div className="mx-auto grid max-w-5xl gap-6 px-4 py-8 md:grid-cols-5">
-        {/* Form card */}
-        <section className="md:col-span-3">
-          <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
-            <h2 className="text-base font-semibold">Role inputs</h2>
-            <p className="mt-1 text-sm text-zinc-500">
-              Add a title if you want, but the task selection matters most.
-            </p>
-
-            <div className="mt-5 grid gap-4">
-              {/* Job Title */}
-              <div>
-                <label className="text-sm font-medium">Job title (optional)</label>
-                <input
-                  className="mt-1 w-full rounded-xl border border-zinc-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-zinc-900/10"
-                  placeholder="e.g., Investment Banker"
-                  value={jobTitle}
-                  onChange={(e) => setJobTitle(e.target.value)}
-                />
-              </div>
-
-              {/* Industry + Seniority */}
-              <div className="grid gap-4 md:grid-cols-2">
-                <div>
-                  <label className="text-sm font-medium">Industry</label>
-                  <select
-                    className="mt-1 w-full rounded-xl border border-zinc-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-zinc-900/10"
-                    value={industry}
-                    onChange={(e) => setIndustry(e.target.value)}
-                  >
-                    <option value="">Select…</option>
-                    <option value="Finance">Finance</option>
-                    <option value="Healthcare">Healthcare</option>
-                    <option value="Tech">Tech</option>
-                    <option value="Education">Education</option>
-                    <option value="Operations">Operations</option>
-                    <option value="Other">Other</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="text-sm font-medium">Seniority</label>
-                  <select
-                    className="mt-1 w-full rounded-xl border border-zinc-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-zinc-900/10"
-                    value={seniority}
-                    onChange={(e) => setSeniority(e.target.value)}
-                  >
-                    <option value="">Select…</option>
-                    <option value="Entry">Entry</option>
-                    <option value="Mid">Mid</option>
-                    <option value="Senior">Senior</option>
-                    <option value="Manager">Manager</option>
-                    <option value="Executive">Executive</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Job description */}
-              <div>
-                <div className="flex items-end justify-between">
-                  <label className="text-sm font-medium">
-                    Job description (required)
-                  </label>
-                  <span className="text-xs text-zinc-500">{jobDesc.length} chars</span>
-                </div>
-
-                <textarea
-                  className="mt-1 min-h-[140px] w-full rounded-xl border border-zinc-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-zinc-900/10"
-                  placeholder="Paste the full job description here…"
-                  value={jobDesc}
-                  onChange={(e) => setJobDesc(e.target.value)}
-                />
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* Tasks + action */}
-        <aside className="md:col-span-2">
-          <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
-            <h2 className="text-base font-semibold">Tasks you actually do</h2>
-            <p className="mt-1 text-sm text-zinc-500">
-              Pick 3–8 weekly tasks.
-            </p>
-
-            <div className="mt-4 flex flex-wrap gap-2">
-              {tasks.map((t) => (
-                <label
-                  key={t}
-                  className={`cursor-pointer rounded-full border px-3 py-2 text-xs hover:bg-zinc-50 ${
-                    selectedTasks.includes(t)
-                      ? "border-zinc-900 bg-zinc-900 text-white"
-                      : "border-zinc-200 bg-white text-zinc-900"
-                  }`}
-                >
-                  <input
-                    type="checkbox"
-                    className="mr-2 align-middle"
-                    checked={selectedTasks.includes(t)}
-                    onChange={() => toggleTask(t)}
-                  />
-                  {t}
-                </label>
-              ))}
-            </div>
-
-            <div className="mt-4 text-xs text-zinc-500">
-              Selected: {selectedTasks.length} / 8
-            </div>
-
-            <button
-              className="mt-5 w-full rounded-xl bg-zinc-900 px-4 py-3 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50"
-              disabled={!canGenerate}
-              onClick={handleGenerate}
+      <div className="mx-auto max-w-6xl px-4 py-8">
+        <div className="grid gap-6 md:grid-cols-12">
+          {/* left column */}
+          <section className="md:col-span-7">
+            <Card
+              title="Role inputs"
+              subtitle="Paste a real job description. Titles help, but tasks drive the score."
+              right={<Pill active={jobDesc.trim().length > 0}>{jobDesc.length} chars</Pill>}
             >
-              {loading ? "Generating..." : "Generate NSFAI Report"}
-            </button>
+              <div className="grid gap-4">
+                <div>
+                  <label className="text-sm font-medium text-zinc-900">Job title (optional)</label>
+                  <input
+                    value={jobTitle}
+                    onChange={(e) => setJobTitle(e.target.value)}
+                    placeholder="e.g., Investment Banker"
+                    className="mt-1 w-full rounded-xl bg-white px-3 py-2 text-sm text-zinc-900 ring-1 ring-zinc-200 outline-none placeholder:text-zinc-400 focus:ring-2 focus:ring-zinc-900/10"
+                  />
+                </div>
 
-            <p className="mt-3 text-xs text-zinc-500">
-              Tip: if you hit a rate limit, wait ~30–60 seconds and try again.
-            </p>
-          </div>
-        </aside>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="text-sm font-medium text-zinc-900">Industry</label>
+                    <select
+                      value={industry}
+                      onChange={(e) => setIndustry(e.target.value)}
+                      className="mt-1 w-full rounded-xl bg-white px-3 py-2 text-sm text-zinc-900 ring-1 ring-zinc-200 outline-none focus:ring-2 focus:ring-zinc-900/10"
+                    >
+                      <option value="">Select…</option>
+                      {industries.map((x) => (
+                        <option key={x} value={x}>
+                          {x}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
 
-        {/* Report */}
-        <section id="report" className="md:col-span-5">
-          <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
-            <h2 className="text-base font-semibold">Report</h2>
-            <p className="mt-1 text-sm text-zinc-500">
-              Your report will show up here after you generate one.
-            </p>
+                  <div>
+                    <label className="text-sm font-medium text-zinc-900">Seniority</label>
+                    <select
+                      value={seniority}
+                      onChange={(e) => setSeniority(e.target.value)}
+                      className="mt-1 w-full rounded-xl bg-white px-3 py-2 text-sm text-zinc-900 ring-1 ring-zinc-200 outline-none focus:ring-2 focus:ring-zinc-900/10"
+                    >
+                      <option value="">Select…</option>
+                      {seniorities.map((x) => (
+                        <option key={x} value={x}>
+                          {x}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
 
-            {error && (
-              <div className="mt-4 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-                {error}
+                <div>
+                  <label className="text-sm font-medium text-zinc-900">Job description (required)</label>
+                  <textarea
+                    value={jobDesc}
+                    onChange={(e) => setJobDesc(e.target.value)}
+                    placeholder="Paste the full job description here…"
+                    className="mt-1 min-h-[180px] w-full rounded-xl bg-white px-3 py-2 text-sm text-zinc-900 ring-1 ring-zinc-200 outline-none placeholder:text-zinc-400 focus:ring-2 focus:ring-zinc-900/10"
+                  />
+                  <p className="mt-2 text-xs text-zinc-500">
+                    Pro tip: The more specific the description, the better the report.
+                  </p>
+                </div>
               </div>
-            )}
+            </Card>
+          </section>
 
-            {report ? (
-              <pre className="mt-4 whitespace-pre-wrap rounded-xl border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-800">
-                {JSON.stringify(report, null, 2)}
-              </pre>
-            ) : (
-              <div className="mt-4 rounded-xl border border-dashed border-zinc-200 p-6 text-sm text-zinc-500">
-                No report yet.
+          {/* right column */}
+          <aside className="md:col-span-5">
+            <Card
+              title="Tasks you actually do"
+              subtitle="Pick 3–8 tasks you do weekly. This matters more than your title."
+              right={<Pill active={selectedTasks.length >= 3 && selectedTasks.length <= 8}>{selectedTasks.length}/8</Pill>}
+            >
+              <div className="flex flex-wrap gap-2">
+                {tasks.map((t) => {
+                  const active = selectedTasks.includes(t);
+                  const disabled = !active && selectedTasks.length >= 8;
+
+                  return (
+                    <button
+                      key={t}
+                      type="button"
+                      onClick={() => toggleTask(t)}
+                      disabled={disabled}
+                      className={[
+                        "rounded-full px-3 py-2 text-left text-xs font-medium transition",
+                        "ring-1",
+                        active
+                          ? "bg-zinc-900 text-white ring-zinc-900"
+                          : "bg-white/70 text-zinc-700 ring-zinc-200 hover:bg-white",
+                        disabled ? "opacity-40 cursor-not-allowed" : "",
+                      ].join(" ")}
+                    >
+                      {t}
+                    </button>
+                  );
+                })}
               </div>
-            )}
-          </div>
-        </section>
+
+              <div className="mt-4 flex items-center justify-between">
+                <p className="text-xs text-zinc-500">
+                  {selectedTasks.length < 3
+                    ? "Select at least 3 tasks to generate."
+                    : selectedTasks.length > 8
+                    ? "Max 8 tasks."
+                    : "Ready to generate."}
+                </p>
+                <Pill active={selectedTasks.length >= 3 && selectedTasks.length <= 8}>
+                  {selectedTasks.length >= 3 && selectedTasks.length <= 8 ? "Valid" : "Not ready"}
+                </Pill>
+              </div>
+
+              <button
+                onClick={handleGenerate}
+                disabled={!canGenerate}
+                className="mt-5 w-full rounded-xl bg-zinc-900 px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {loading ? "Generating…" : "Generate NSFAI Report"}
+              </button>
+
+              <div className="mt-3 text-xs text-zinc-500">
+                If you hit rate limit, wait ~30–60 seconds and try again.
+              </div>
+            </Card>
+          </aside>
+
+          {/* report */}
+          <section id="report" className="md:col-span-12">
+            <Card
+              title="Report"
+              subtitle="This will populate after generation."
+              right={
+                report ? (
+                  <Pill active>Generated</Pill>
+                ) : (
+                  <Pill active={false}>Empty</Pill>
+                )
+              }
+            >
+              {error ? (
+                <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+                  {error}
+                </div>
+              ) : null}
+
+              {!report ? (
+                <div className="rounded-xl border border-dashed border-zinc-200 bg-white/60 p-8 text-sm text-zinc-500">
+                  No report yet.
+                </div>
+              ) : (
+                <div className="grid gap-4 md:grid-cols-2">
+                  {/* If your API returns fields like score, summary, etc, this will still show nicely */}
+                  <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200">
+                    <div className="text-xs font-semibold text-zinc-500">RAW OUTPUT</div>
+                    <pre className="mt-2 whitespace-pre-wrap text-xs text-zinc-800">
+                      {JSON.stringify(report, null, 2)}
+                    </pre>
+                  </div>
+
+                  <div className="rounded-xl bg-white p-4 ring-1 ring-zinc-200">
+                    <div className="text-xs font-semibold text-zinc-500">NEXT</div>
+                    <ul className="mt-2 space-y-2 text-sm text-zinc-700">
+                      <li>• We can format the report into cards (Score, Automatable, Human Moat, Recommendations).</li>
+                      <li>• Add “Copy report” button.</li>
+                      <li>• Add history + shareable link.</li>
+                    </ul>
+                  </div>
+                </div>
+              )}
+            </Card>
+          </section>
+        </div>
       </div>
     </main>
   );
