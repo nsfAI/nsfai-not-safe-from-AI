@@ -38,9 +38,23 @@ async function geminiJson({ prompt, temperature = 0.2 }) {
     const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
     if (!text) throw new Error("No model output received.");
 
-    return JSON.parse(text);
+    // --- Robust JSON extraction (fixes your current error) ---
+    let cleaned = String(text).trim();
+
+    // Remove markdown fences if present
+    if (cleaned.startsWith("```")) {
+      cleaned = cleaned.replace(/```json/g, "").replace(/```/g, "").trim();
+    }
+
+    // Extract first JSON object in case model adds extra text
+    const firstBrace = cleaned.indexOf("{");
+    const lastBrace = cleaned.lastIndexOf("}");
+    if (firstBrace !== -1 && lastBrace !== -1) {
+      cleaned = cleaned.slice(firstBrace, lastBrace + 1);
+    }
+
+    return JSON.parse(cleaned);
   } catch (e) {
-    // Timeout / abort handling
     if (String(e?.name) === "AbortError") {
       throw new Error("AI request timed out. Please try again in 30–60 seconds.");
     }
@@ -70,7 +84,7 @@ export async function POST(req) {
     const prompt = `
 You are NSFAI (Not Safe From AI), an advanced job risk scoring engine.
 
-Return ONLY valid JSON. No markdown.
+Return ONLY valid JSON. No markdown. No extra text.
 
 Inputs:
 title: ${title || "(not provided)"}
