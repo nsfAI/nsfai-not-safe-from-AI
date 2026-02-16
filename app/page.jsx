@@ -141,7 +141,6 @@ export default function Page() {
           </div>
 
           <div className="flex items-center gap-2">
-  {/* Jump to Report */}
   <a
     href="#report"
     className="rounded-xl border border-black/10 bg-white px-3 py-2 text-sm shadow-sm hover:bg-neutral-50"
@@ -149,7 +148,6 @@ export default function Page() {
     Jump to report
   </a>
 
-  {/* Compression Index */}
   <a
     href="/compression"
     className="rounded-xl border border-black/10 bg-white px-3 py-2 text-sm shadow-sm hover:bg-neutral-50"
@@ -157,7 +155,6 @@ export default function Page() {
     Compression Index
   </a>
 
-  {/* Reset */}
   <button
     onClick={resetAll}
     className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-black/90"
@@ -165,6 +162,7 @@ export default function Page() {
     Reset
   </button>
 </div>
+
 
           </div>
         </div>
