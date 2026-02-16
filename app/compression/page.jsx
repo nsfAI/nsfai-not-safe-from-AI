@@ -7,7 +7,6 @@ function cx(...classes) {
 }
 
 function Sparkline({ points = [] }) {
-  // points: [{x, y}] y in 0..100
   const w = 520;
   const h = 120;
   const pad = 10;
@@ -46,7 +45,16 @@ function Pill({ children, tone = "neutral" }) {
       ? "bg-rose-50 text-rose-700 border-rose-200"
       : "bg-zinc-50 text-zinc-700 border-zinc-200";
 
-  return <span className={cx("inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold", toneCls)}>{children}</span>;
+  return (
+    <span
+      className={cx(
+        "inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold",
+        toneCls
+      )}
+    >
+      {children}
+    </span>
+  );
 }
 
 function formatDelta(n) {
@@ -82,7 +90,6 @@ export default function CompressionPage() {
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sector, skill, range]);
 
   const latest = data?.latest;
@@ -97,9 +104,13 @@ export default function CompressionPage() {
 
   return (
     <main className="mx-auto w-full max-w-6xl px-4 pb-16 pt-10">
+
+      {/* Header */}
       <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Compression Index</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            Compression Index
+          </h1>
           <p className="mt-1 text-sm text-black/60">
             Live enterprise signals that correlate with AI-driven labor compression (not just “bad economy” vibes).
           </p>
@@ -158,6 +169,21 @@ export default function CompressionPage() {
             ))}
           </select>
 
+          {/* Navigation */}
+          <a
+            href="/"
+            className="h-10 rounded-xl border border-black/10 bg-white px-3 text-sm font-semibold hover:bg-black/5"
+          >
+            ← NSFAI Scanner
+          </a>
+
+          <a
+            href="/#report"
+            className="h-10 rounded-xl border border-black/10 bg-white px-3 text-sm font-semibold hover:bg-black/5"
+          >
+            Jump to report
+          </a>
+
           <button
             onClick={load}
             className="h-10 rounded-xl bg-black px-4 text-sm font-semibold text-white hover:bg-black/90"
@@ -167,15 +193,20 @@ export default function CompressionPage() {
         </div>
       </div>
 
-      {/* Top KPI row */}
+      {/* KPI Row */}
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="rounded-3xl border border-black/5 bg-white p-6 shadow-[0_8px_30px_rgba(0,0,0,0.05)]">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <p className="text-sm font-semibold text-black/70">Compression Index</p>
+              <p className="text-sm font-semibold text-black/70">
+                Compression Index
+              </p>
               <p className="mt-2 text-4xl font-semibold tracking-tight">
                 {loading ? "—" : `${latest?.index ?? "—"}`}
-                <span className="text-lg font-semibold text-black/50"> / 100</span>
+                <span className="text-lg font-semibold text-black/50">
+                  {" "}
+                  / 100
+                </span>
               </p>
               <div className="mt-3 flex items-center gap-2">
                 <Pill tone={tone(latest?.index ?? 0)}>
@@ -189,28 +220,24 @@ export default function CompressionPage() {
 
             <div className="text-right">
               <p className="text-xs text-black/50">Scope</p>
-              <p className="mt-1 text-sm font-semibold">{sector} · {skill}</p>
-              <p className="mt-1 text-xs text-black/50">Updated: {latest?.asOf || "—"}</p>
+              <p className="mt-1 text-sm font-semibold">
+                {sector} · {skill}
+              </p>
+              <p className="mt-1 text-xs text-black/50">
+                Updated: {latest?.asOf || "—"}
+              </p>
             </div>
           </div>
 
           <div className="mt-5">
             <Sparkline points={series.map((d, i) => ({ x: i, y: d.index }))} />
           </div>
-
-          <p className="mt-3 text-xs text-black/55">
-            Index is a weighted blend of layoffs clustering, job posting decline, and AI adoption proxy.
-          </p>
-
-          {data?.meta?.mode === "mock" && (
-            <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
-              Using <b>mock</b> data (no data source env vars detected). This is expected until you wire real feeds.
-            </div>
-          )}
         </div>
 
         <div className="rounded-3xl border border-black/5 bg-white p-6 shadow-[0_8px_30px_rgba(0,0,0,0.05)]">
-          <p className="text-sm font-semibold text-black/70">Signal breakdown</p>
+          <p className="text-sm font-semibold text-black/70">
+            Signal breakdown
+          </p>
 
           <div className="mt-4 grid gap-3">
             {[
@@ -224,14 +251,12 @@ export default function CompressionPage() {
                     <p className="text-sm font-semibold">{s.title}</p>
                     <p className="mt-1 text-xs text-black/55">{s.desc}</p>
                   </div>
-                  <Pill tone={tone(s.val ?? 0)}>{loading ? "—" : `${s.val ?? "—"}`}</Pill>
+                  <Pill tone={tone(s.val ?? 0)}>
+                    {loading ? "—" : `${s.val ?? "—"}`}
+                  </Pill>
                 </div>
               </div>
             ))}
-          </div>
-
-          <div className="mt-4 rounded-2xl border border-black/5 bg-zinc-50 p-4 text-sm text-black/70">
-            <b>Interpretation:</b> high score = labor is compressing faster in this sector/skill. It does <i>not</i> mean “job extinct tomorrow.”
           </div>
 
           {err && (
