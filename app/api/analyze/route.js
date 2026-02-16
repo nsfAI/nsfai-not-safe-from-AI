@@ -1,76 +1,100 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
+export const runtime = "nodejs"; // important for Vercel
+
 export async function POST(req) {
   try {
-    const body = await req.json();
-
+    // Parse request body
     const {
       jobTitle,
       industry,
       seniority,
-      description,
+      jobDescription,
       tasks
-    } = body;
+    } = await req.json();
 
-    const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
+    // Validate API key
+    if (!process.env.GEMINI_API_KEY) {
+      return new Response(
+        JSON.stringify({ error: "Missing GEMINI_API_KEY environment variable." }),
+        { status: 500 }
+      );
+    }
 
-    // ✅ FIXED MODEL (supported + stable)
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+    // ✅ Use stable, supported model
     const model = genAI.getGenerativeModel({
       model: "gemini-1.5-flash"
     });
 
     const prompt = `
-You are an AI career risk analyst.
+You are an AI career displacement risk analyst.
 
-Analyze the following role and return STRICT JSON only.
+Return ONLY valid JSON.
 
-Return this exact JSON structure:
-
-{
-  "riskLevel": "Low | Medium | High",
-  "safetyScore": number (0-100),
-  "timeHorizon": "1-3 years | 3-5 years | 5+ years",
-  "automationExposure": number,
-  "augmentationPotential": number,
-  "humanMoat": number,
-  "accountabilityShield": number,
-  "toolchainReplaceability": number,
-  "adoptionSpeedFactor": number,
-  "summary": "string",
-  "mostAtRiskTasks": ["string"],
-  "mostDefensibleTasks": ["string"]
-}
+Analyze the following role:
 
 Job Title: ${jobTitle}
 Industry: ${industry}
 Seniority: ${seniority}
 
 Job Description:
-${description}
+${jobDescription}
 
-Tasks Selected:
-${tasks.join(", ")}
+Selected Tasks:
+${Array.isArray(tasks) ? tasks.join(", ") : ""}
+
+Return JSON in this exact format:
+
+{
+  "riskLevel": "Low | Moderate | High",
+  "safetyScore": number (0-100),
+  "automationExposure": number (0-100),
+  "augmentationPotential": number (0-100),
+  "humanMoat": number (0-100),
+  "accountabilityShield": number (0-100),
+  "toolchainReplaceability": number (0-100),
+  "adoptionSpeed": number (0-1),
+  "summary": "short explanation"
+}
 `;
 
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const text = response.text();
+    const result = await model.generateContent({
+      contents: [
+        {
+          role: "user",
+          parts: [{ text: prompt }]
+        }
+      ]
+    });
 
-    // Attempt to safely extract JSON
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    const rawText = result.response.text();
 
-    if (!jsonMatch) {
-      throw new Error("Model did not return structured JSON.");
+    // Attempt to safely parse JSON
+    let parsed;
+
+    try {
+      parsed = JSON.parse(rawText);
+    } catch (err) {
+      return new Response(
+        JSON.stringify({
+          error: "Model did not return valid JSON.",
+          raw: rawText
+        }),
+        { status: 500 }
+      );
     }
 
-    const parsed = JSON.parse(jsonMatch[0]);
-
-    return Response.json(parsed);
+    return new Response(JSON.stringify(parsed), {
+      headers: { "Content-Type": "application/json" }
+    });
 
   } catch (error) {
-    console.error("Analyze Error:", error);
-    return Response.json(
-      { error: error.message || "Something went wrong." },
+    return new Response(
+      JSON.stringify({
+        error: error.message
+      }),
       { status: 500 }
     );
   }
