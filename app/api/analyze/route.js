@@ -1,85 +1,76 @@
-import { NextResponse } from "next/server";
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
 export async function POST(req) {
   try {
     const body = await req.json();
-    const { jobTitle, industry, seniority, description, tasks } = body;
+    const { jobTitle, industry, seniority, jobDescription, tasks } = body;
 
-    const ai = new GoogleGenAI({
-      apiKey: process.env.GOOGLE_API_KEY,
+    if (!jobDescription) {
+      return Response.json(
+        { error: "Job description is required." },
+        { status: 400 }
+      );
+    }
+
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+    const model = genAI.getGenerativeModel({
+      model: "gemini-2.0-flash",
     });
 
     const prompt = `
-You are NSFAI™, an AI workforce risk intelligence engine.
+Analyze AI displacement risk.
 
-Return ONLY valid JSON.
-Do not include markdown.
-Do not include commentary.
+Title: ${jobTitle || "N/A"}
+Industry: ${industry || "N/A"}
+Seniority: ${seniority || "N/A"}
 
-Structure exactly as:
-
-{
-  "riskScore": number (0-100),
-  "riskLevel": "Low" | "Moderate" | "High" | "Critical",
-  "timeline": "0-2 years" | "2-4 years" | "4-6 years" | "6+ years",
-  "confidence": number (0-100),
-  "automationExposure": number (0-100),
-  "humanMoat": number (0-100),
-  "augmentationPotential": number (0-100),
-  "taskBreakdown": [
-    { "task": string, "risk": number }
-  ],
-  "riskDrivers": [string],
-  "protectionFactors": [string],
-  "futureProofSkills": [string]
-}
-
-Job Title: ${jobTitle}
-Industry: ${industry}
-Seniority: ${seniority}
+Key Tasks:
+${tasks?.join(", ") || "Not specified"}
 
 Job Description:
-${description}
+${jobDescription}
 
-Primary Tasks:
-${tasks?.join(", ")}
+Return ONLY valid JSON:
+{
+  "riskScore": number (0-100),
+  "automationLikelihood": "Low | Medium | High",
+  "reasoning": "short explanation",
+  "resilienceFactors": ["factor1", "factor2"],
+  "vulnerableAreas": ["area1", "area2"]
+}
 `;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash",
-      contents: prompt,
-      config: {
-        temperature: 0.3,
-        maxOutputTokens: 800
+    async function generateWithRetry(retries = 2) {
+      try {
+        return await model.generateContent(prompt);
+      } catch (err) {
+        if (
+          err.message?.includes("429") ||
+          err.message?.includes("RESOURCE_EXHAUSTED")
+        ) {
+          if (retries > 0) {
+            await new Promise((res) => setTimeout(res, 1500));
+            return generateWithRetry(retries - 1);
+          }
+          return Response.json(
+            { error: "Rate limit hit. Please try again shortly." },
+            { status: 429 }
+          );
+        }
+        throw err;
       }
-    });
-
-    const raw = response.text;
-
-    let parsed;
-
-    try {
-      parsed = JSON.parse(raw);
-    } catch (err) {
-      return NextResponse.json(
-        { error: "Model did not return structured JSON.", raw },
-        { status: 500 }
-      );
     }
 
-    return NextResponse.json(parsed);
+    const result = await generateWithRetry();
 
+    const text = result.response.text();
+
+    return Response.json({ report: text });
   } catch (error) {
-    if (error.status === 429) {
-      return NextResponse.json(
-        { error: "Rate limit hit. Please try again shortly." },
-        { status: 429 }
-      );
-    }
-
-    return NextResponse.json(
-      { error: error.message },
+    console.error(error);
+    return Response.json(
+      { error: "Something went wrong." },
       { status: 500 }
     );
   }
