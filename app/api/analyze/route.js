@@ -5,6 +5,13 @@ export async function POST(req) {
     const body = await req.json();
     const { jobTitle, industry, seniority, description, tasks } = body;
 
+    if (!process.env.GOOGLE_API_KEY) {
+      return Response.json(
+        { error: "Missing GOOGLE_API_KEY in environment variables." },
+        { status: 500 }
+      );
+    }
+
     const ai = new GoogleGenAI({
       apiKey: process.env.GOOGLE_API_KEY,
     });
@@ -32,7 +39,7 @@ ${tasks?.join(", ")}
 `;
 
     const response = await ai.models.generateContent({
-      model: "gemini-1.0-pro",
+      model: "gemini-2.0-flash",
       contents: prompt,
     });
 
@@ -41,7 +48,7 @@ ${tasks?.join(", ")}
     });
 
   } catch (error) {
-    console.error(error);
+    console.error("GENAI ERROR:", error);
     return Response.json(
       { error: error.message },
       { status: 500 }
