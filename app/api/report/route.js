@@ -1,313 +1,268 @@
-import { NextResponse } from "next/server";
-
 export const runtime = "nodejs";
 
-const MODEL = "gemini-2.0-flash";
+/**
+ * NSFAI — Report API
+ * - Calls Gemini (gemini-2.0-flash)
+ * - Forces strict JSON output
+ * - Applies "structural dampeners" to prevent unrealistic high scores for
+ *   physical / liability / empathy-heavy roles
+ */
 
-const SYSTEM_PROMPT = `
-You are an AI labor automation analyst.
-
-You evaluate automation exposure of tasks, NOT full job extinction.
-
-Return JSON ONLY. No markdown, no backticks, no extra commentary.
-
-You MUST output BOTH:
-(A) "new_schema" (task scores + structural dampeners), AND
-(B) "legacy_schema" (fields expected by an older UI).
-
-Follow this process:
-
-1) Score each selected task for automation exposure (0–10) with a brief reason.
-2) Compute base exposure (average of task scores).
-3) Detect structural resistance factors:
-   - physical_unpredictability
-   - real_time_embodied_decision_making
-   - legal_liability_life_safety
-   - heavy_empathy_trust
-   - environmental_chaos
-4) Apply caps:
-   - If 2+ of (physical_unpredictability, legal_liability_life_safety, heavy_empathy_trust) are true => cap at 5
-   - Else if legal_liability_life_safety is true => cap at 6
-   - Else if heavy_empathy_trust is true => cap at 6
-   - Else if physical_unpredictability is true => cap at 7
-   - Else cap = null (no cap)
-5) Final score = min(base exposure, cap) if cap exists else base exposure.
-6) Derive a risk band from final score:
-   0–2 Extremely resistant
-   3–4 Low exposure
-   5–6 Moderate exposure
-   7–8 High task automation exposure
-   9–10 Very high displacement probability
-
-Output EXACT JSON shape:
-
-{
-  "new_schema": {
-    "task_scores": [{"task":"...","score":0-10,"reason":"..."}],
-    "base_exposure": 0-10,
-    "structural_resistance": "Low|Medium|High",
-    "structural_factors": {
-      "physical_unpredictability": true|false,
-      "real_time_embodied_decision_making": true|false,
-      "legal_liability_life_safety": true|false,
-      "heavy_empathy_trust": true|false,
-      "environmental_chaos": true|false
-    },
-    "dampener_applied": true|false,
-    "cap_applied": 5|6|7|null,
-    "final_replacement_score": 0-10,
-    "explanation": "...",
-    "confidence": "Low|Medium|High"
-  },
-  "legacy_schema": {
-    "risk_score": 0-10,
-    "risk_band": "Extremely resistant|Low exposure|Moderate exposure|High task automation exposure|Very high displacement probability",
-    "why": ["...","...","..."],
-    "most_automatable": [{"task":"...","reason":"...","time_horizon":"0-12m|1-3y|3-5y|5y+"}],
-    "most_human_moat": [{"task":"...","reason":"..."}],
-    "recommendations": ["...","...","..."],
-    "assumptions": ["...","..."]
-  }
-}
-`;
-
-function jsonFromText(text) {
-  try {
-    return JSON.parse(text);
-  } catch (_) {}
-
-  const firstBrace = text.indexOf("{");
-  const lastBrace = text.lastIndexOf("}");
-  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-    const candidate = text.slice(firstBrace, lastBrace + 1);
-    try {
-      return JSON.parse(candidate);
-    } catch (_) {}
-  }
-  return null;
+function bandFromScore(score) {
+  if (score <= 2) return "Extremely resistant";
+  if (score <= 4) return "Low exposure";
+  if (score <= 6) return "Moderate exposure";
+  if (score <= 8) return "High task automation exposure";
+  return "Very high displacement probability";
 }
 
-function clamp(n, min, max) {
-  const num = Number(n);
-  if (!Number.isFinite(num)) return min;
-  return Math.max(min, Math.min(max, num));
+function clampInt(n, min, max) {
+  const x = Number.isFinite(n) ? n : 0;
+  return Math.max(min, Math.min(max, Math.round(x)));
 }
 
-function asArrayStrings(x) {
-  if (!Array.isArray(x)) return [];
-  return x.map((v) => String(v ?? "")).filter(Boolean);
+function stripCodeFences(text) {
+  if (!text) return "";
+  return text
+    .replace(/```json\s*/gi, "")
+    .replace(/```/g, "")
+    .trim();
 }
 
-function normalizeOutput(parsed) {
-  const ns = parsed?.new_schema ?? {};
-  const ls = parsed?.legacy_schema ?? {};
-
-  // --- new schema normalization ---
-  const task_scores = Array.isArray(ns.task_scores) ? ns.task_scores : [];
-  const normalizedTaskScores = task_scores
-    .map((t) => ({
-      task: String(t?.task ?? ""),
-      score: clamp(t?.score ?? 0, 0, 10),
-      reason: String(t?.reason ?? ""),
-    }))
-    .filter((t) => t.task.length > 0);
-
-  const base_exposure = clamp(ns.base_exposure ?? 0, 0, 10);
-
-  const f = ns.structural_factors ?? {};
-  const structural_factors = {
-    physical_unpredictability: Boolean(f.physical_unpredictability),
-    real_time_embodied_decision_making: Boolean(f.real_time_embodied_decision_making),
-    legal_liability_life_safety: Boolean(f.legal_liability_life_safety),
-    heavy_empathy_trust: Boolean(f.heavy_empathy_trust),
-    environmental_chaos: Boolean(f.environmental_chaos),
-  };
-
-  const sr = String(ns.structural_resistance ?? "Medium");
-  const structural_resistance = ["Low", "Medium", "High"].includes(sr) ? sr : "Medium";
-
-  const dampener_applied = Boolean(ns.dampener_applied);
-  const capVal = ns.cap_applied;
-  const cap_applied = capVal === 5 || capVal === 6 || capVal === 7 ? capVal : null;
-
-  const final_replacement_score = clamp(ns.final_replacement_score ?? base_exposure, 0, 10);
-
-  const conf = String(ns.confidence ?? "Medium");
-  const confidence = ["Low", "Medium", "High"].includes(conf) ? conf : "Medium";
-
-  const explanation = String(ns.explanation ?? "");
-
-  const new_schema = {
-    task_scores: normalizedTaskScores,
-    base_exposure,
-    structural_resistance,
-    structural_factors,
-    dampener_applied,
-    cap_applied,
-    final_replacement_score,
-    explanation,
-    confidence,
-  };
-
-  // --- legacy schema normalization (what your UI expects) ---
-  const risk_score = clamp(ls.risk_score ?? final_replacement_score, 0, 10);
-
-  const rb = String(ls.risk_band ?? "");
-  const allowedBands = [
-    "Extremely resistant",
-    "Low exposure",
-    "Moderate exposure",
-    "High task automation exposure",
-    "Very high displacement probability",
+/**
+ * Structural dampener:
+ * If user selects tasks that imply strong "human moat", cap score.
+ *
+ * Example:
+ * - 2+ moat indicators => cap at 6
+ * - 1 moat indicator  => cap at 7
+ */
+function applyStructuralDampener(score, selectedTasks = []) {
+  const moatIndicators = [
+    "Hands-on physical work (field, equipment, lab)",
+    "High-stakes decisions / sign-off / liability responsibility",
+    "Caregiving / high-empathy human interaction",
   ];
-  const risk_band = allowedBands.includes(rb)
-    ? rb
-    : risk_score <= 2
-      ? "Extremely resistant"
-      : risk_score <= 4
-        ? "Low exposure"
-        : risk_score <= 6
-          ? "Moderate exposure"
-          : risk_score <= 8
-            ? "High task automation exposure"
-            : "Very high displacement probability";
 
-  const why = asArrayStrings(ls.why);
-  const recommendations = asArrayStrings(ls.recommendations);
-  const assumptions = asArrayStrings(ls.assumptions);
+  const hits = selectedTasks.filter((t) => moatIndicators.includes(t)).length;
 
-  const most_automatable = Array.isArray(ls.most_automatable) ? ls.most_automatable : [];
-  const most_human_moat = Array.isArray(ls.most_human_moat) ? ls.most_human_moat : [];
+  const base = clampInt(score, 0, 10);
 
-  const legacy_schema = {
-    risk_score,
-    risk_band,
-    why: why.length ? why : explanation ? [explanation] : [],
-    most_automatable: most_automatable
-      .map((x) => ({
-        task: String(x?.task ?? ""),
-        reason: String(x?.reason ?? ""),
-        time_horizon: String(x?.time_horizon ?? "1-3y"),
-      }))
-      .filter((x) => x.task),
-    most_human_moat: most_human_moat
-      .map((x) => ({
-        task: String(x?.task ?? ""),
-        reason: String(x?.reason ?? ""),
-      }))
-      .filter((x) => x.task),
-    recommendations,
-    assumptions,
-  };
+  if (hits >= 2) return Math.min(base, 6);
+  if (hits === 1) return Math.min(base, 7);
+  return base;
+}
 
-  return { new_schema, legacy_schema };
+function resilienceFactorsFromTasks(selectedTasks = []) {
+  const factors = [];
+
+  if (selectedTasks.includes("Hands-on physical work (field, equipment, lab)")) {
+    factors.push("Physical unpredictability / real-world environment");
+  }
+  if (
+    selectedTasks.includes(
+      "High-stakes decisions / sign-off / liability responsibility"
+    )
+  ) {
+    factors.push("Legal liability / accountability");
+  }
+  if (selectedTasks.includes("Caregiving / high-empathy human interaction")) {
+    factors.push("Empathy / trust / human relationship requirements");
+  }
+
+  return factors;
 }
 
 export async function POST(req) {
   try {
-    const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
-    if (!apiKey) {
-      return NextResponse.json(
-        { ok: false, error: "Missing GEMINI_API_KEY (or GOOGLE_API_KEY) in env vars." },
-        { status: 500 }
-      );
-    }
+    const body = await req.json();
 
-    const body = await req.json().catch(() => null);
-    if (!body) return NextResponse.json({ ok: false, error: "Invalid JSON body." }, { status: 400 });
+    const jobTitle = (body?.jobTitle || "").toString().slice(0, 120);
+    const industry = (body?.industry || "").toString().slice(0, 80);
+    const seniority = (body?.seniority || "").toString().slice(0, 80);
+    const jobDescription = (body?.jobDescription || "").toString().slice(0, 8000);
+    const tasks = Array.isArray(body?.tasks) ? body.tasks.slice(0, 12) : [];
 
-    const jobTitle = String(body.jobTitle ?? "");
-    const industry = String(body.industry ?? "");
-    const seniority = String(body.seniority ?? "");
-    const jobDescription = String(body.jobDescription ?? "");
-    const tasks = Array.isArray(body.tasks) ? body.tasks.map(String) : [];
-
-    if (!jobDescription || tasks.length < 3) {
-      return NextResponse.json(
-        { ok: false, error: "Provide a job description and select 3–8 tasks." },
+    if (!jobDescription.trim()) {
+      return Response.json(
+        { ok: false, error: "Missing job description." },
         { status: 400 }
       );
     }
 
-    const userPrompt = `
-ROLE INPUTS:
-- Job title: ${jobTitle || "(not provided)"}
-- Industry: ${industry || "(not provided)"}
-- Seniority: ${seniority || "(not provided)"}
+    const apiKey =
+      process.env.GEMINI_API_KEY ||
+      process.env.GOOGLE_API_KEY ||
+      process.env.GOOGLE_GENERATIVE_AI_API_KEY;
 
-JOB DESCRIPTION:
+    if (!apiKey) {
+      return Response.json(
+        { ok: false, error: "Missing GEMINI_API_KEY (or GOOGLE_API_KEY) on server." },
+        { status: 500 }
+      );
+    }
+
+    const model = "gemini-2.0-flash";
+
+    // Tell Gemini to ONLY output strict JSON with this schema.
+    // (No prose, no markdown, no code fences.)
+    const prompt = `
+You are an AI labor-market analyst. Output STRICT JSON ONLY.
+
+Goal:
+Given the role + tasks, estimate AI automation exposure.
+
+IMPORTANT:
+- This is NOT "job extinction certainty".
+- It is "task automation exposure".
+- Scores are 0–10 (integers only).
+
+Return JSON with EXACT keys:
+{
+  "risk_score": number,
+  "risk_band": string,
+  "why": string[],
+  "most_automatable": { "task": string, "reason": string, "time_horizon": "0-12m"|"1-3y"|"3-5y"|"5y+" }[],
+  "most_human_moat": { "task": string, "reason": string }[],
+  "recommendations": string[],
+  "assumptions": string[]
+}
+
+Constraints:
+- risk_score must be an integer 0–10
+- why: 2–5 bullets, plain English
+- most_automatable: 2–4 items
+- most_human_moat: 2–4 items
+- recommendations: 3–6 items
+- assumptions: 1–3 items
+
+Inputs:
+Job title: ${jobTitle || "(none)"}
+Industry: ${industry || "(none)"}
+Seniority: ${seniority || "(none)"}
+
+Selected tasks:
+${tasks.length ? tasks.map((t) => `- ${t}`).join("\n") : "(none)"}
+
+Job description:
 ${jobDescription}
 
-SELECTED TASKS (3–8):
-${tasks.map((t, i) => `${i + 1}. ${t}`).join("\n")}
+Now output ONLY the JSON object. No extra text.
 `.trim();
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${apiKey}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(
+      apiKey
+    )}`;
 
-    const payload = {
-      contents: [
-        {
-          role: "user",
-          parts: [{ text: SYSTEM_PROMPT + "\n\n" + userPrompt }],
+    const geminiRes = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0.2,
+          maxOutputTokens: 900,
         },
-      ],
-      generationConfig: {
-        temperature: 0.2,
-        topP: 0.9,
-        maxOutputTokens: 1600,
+      }),
+    });
+
+    const raw = await geminiRes.text();
+
+    if (!geminiRes.ok) {
+      // Bubble up info safely
+      return Response.json(
+        {
+          ok: false,
+          error: `Gemini API error (${geminiRes.status})`,
+          details: raw?.slice(0, 600),
+        },
+        { status: 502 }
+      );
+    }
+
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      return Response.json(
+        {
+          ok: false,
+          error: "Gemini returned non-JSON API payload (unexpected).",
+          details: raw?.slice(0, 600),
+        },
+        { status: 502 }
+      );
+    }
+
+    const textOut =
+      data?.candidates?.[0]?.content?.parts?.map((p) => p?.text || "").join("") ||
+      "";
+
+    const cleaned = stripCodeFences(textOut);
+
+    let report;
+    try {
+      report = JSON.parse(cleaned);
+    } catch (e) {
+      return Response.json(
+        {
+          ok: false,
+          error: "Gemini returned invalid JSON.",
+          details: cleaned?.slice(0, 900),
+        },
+        { status: 502 }
+      );
+    }
+
+    // Normalize + compute band
+    const originalScore = clampInt(report?.risk_score, 0, 10);
+    const adjustedScore = applyStructuralDampener(originalScore, tasks);
+    const finalBand = bandFromScore(adjustedScore);
+
+    const resilience_factors = resilienceFactorsFromTasks(tasks);
+
+    const normalized = {
+      risk_score: adjustedScore,
+      risk_band: finalBand,
+      why: Array.isArray(report?.why) ? report.why.slice(0, 6) : [],
+      most_automatable: Array.isArray(report?.most_automatable)
+        ? report.most_automatable.slice(0, 6)
+        : [],
+      most_human_moat: Array.isArray(report?.most_human_moat)
+        ? report.most_human_moat.slice(0, 6)
+        : [],
+      recommendations: Array.isArray(report?.recommendations)
+        ? report.recommendations.slice(0, 10)
+        : [],
+      assumptions: Array.isArray(report?.assumptions) ? report.assumptions.slice(0, 6) : [],
+      resilience_factors,
+      meta: {
+        model,
+        original_score: originalScore,
+        dampener_applied: adjustedScore !== originalScore,
       },
     };
 
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-
-    if (!resp.ok) {
-      const errText = await resp.text().catch(() => "");
-      return NextResponse.json(
-        { ok: false, error: `Gemini API error (${resp.status})`, details: errText.slice(0, 1200) },
-        { status: 502 }
-      );
-    }
-
-    const data = await resp.json();
-    const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join("")?.trim() || "";
-
-    const parsed = jsonFromText(text);
-    if (!parsed) {
-      return NextResponse.json(
-        { ok: false, error: "Gemini returned invalid JSON.", raw: text.slice(0, 1500) },
-        { status: 502 }
-      );
-    }
-
-    const { new_schema, legacy_schema } = normalizeOutput(parsed);
-
-    // ✅ IMPORTANT: Return legacy fields at top-level "report" for your existing UI
-    return NextResponse.json({
-      ok: true,
-      usedModel: MODEL,
-
-      // New structured stuff (for later UI upgrade)
-      new_report: new_schema,
-
-      // OLD UI expects: data.report.risk_score etc.
-      report: legacy_schema,
-
-      meta: {
-        received: { jobTitle, industry, seniority, tasksCount: tasks.length, chars: jobDescription.length },
+    return Response.json(
+      {
+        ok: true,
+        usedModel: model,
+        report: normalized,
       },
-    });
-  } catch (e) {
-    return NextResponse.json(
-      { ok: false, error: "Server error", details: String(e?.message || e) },
+      { status: 200 }
+    );
+  } catch (err) {
+    return Response.json(
+      {
+        ok: false,
+        error: "Server error generating report.",
+        details: String(err?.message || err),
+      },
       { status: 500 }
     );
   }
 }
 
 export async function GET() {
-  return NextResponse.json({ ok: false, error: "Method Not Allowed" }, { status: 405 });
+  return Response.json({ ok: false, error: "Method not allowed." }, { status: 405 });
 }
