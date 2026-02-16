@@ -4,73 +4,82 @@ import { GoogleGenAI } from "@google/genai";
 export async function POST(req) {
   try {
     const body = await req.json();
-
-    const {
-      jobTitle,
-      industry,
-      seniority,
-      description,
-      tasks
-    } = body;
-
-    if (!description) {
-      return NextResponse.json(
-        { error: "Job description is required." },
-        { status: 400 }
-      );
-    }
+    const { jobTitle, industry, seniority, description, tasks } = body;
 
     const ai = new GoogleGenAI({
-      apiKey: process.env.GOOGLE_API_KEY
+      apiKey: process.env.GOOGLE_API_KEY,
     });
 
     const prompt = `
-You are an AI labor displacement risk analyst.
+You are NSFAI™, an AI workforce risk intelligence engine.
 
-Analyze the following job and estimate AI automation risk.
+Return ONLY valid JSON.
+Do not include markdown.
+Do not include commentary.
 
-Return:
-1. Risk Score (0–100%)
-2. Explanation (concise but detailed)
-3. Which tasks are most automatable
-4. Which tasks are hardest to automate
+Structure exactly as:
 
-Job Title: ${jobTitle || "N/A"}
-Industry: ${industry || "N/A"}
-Seniority: ${seniority || "N/A"}
+{
+  "riskScore": number (0-100),
+  "riskLevel": "Low" | "Moderate" | "High" | "Critical",
+  "timeline": "0-2 years" | "2-4 years" | "4-6 years" | "6+ years",
+  "confidence": number (0-100),
+  "automationExposure": number (0-100),
+  "humanMoat": number (0-100),
+  "augmentationPotential": number (0-100),
+  "taskBreakdown": [
+    { "task": string, "risk": number }
+  ],
+  "riskDrivers": [string],
+  "protectionFactors": [string],
+  "futureProofSkills": [string]
+}
+
+Job Title: ${jobTitle}
+Industry: ${industry}
+Seniority: ${seniority}
 
 Job Description:
 ${description}
 
 Primary Tasks:
-${tasks?.join(", ") || "Not provided"}
+${tasks?.join(", ")}
 `;
 
     const response = await ai.models.generateContent({
       model: "gemini-2.0-flash",
       contents: prompt,
       config: {
-        temperature: 0.7,
-        maxOutputTokens: 700
+        temperature: 0.3,
+        maxOutputTokens: 800
       }
     });
 
-    return NextResponse.json({
-      result: response.text
-    });
+    const raw = response.text;
+
+    let parsed;
+
+    try {
+      parsed = JSON.parse(raw);
+    } catch (err) {
+      return NextResponse.json(
+        { error: "Model did not return structured JSON.", raw },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json(parsed);
 
   } catch (error) {
-    console.error("AI ERROR:", error);
-
     if (error.status === 429) {
       return NextResponse.json(
-        { error: "Rate limit hit. Wait 30–60 seconds and try again." },
+        { error: "Rate limit hit. Please try again shortly." },
         { status: 429 }
       );
     }
 
     return NextResponse.json(
-      { error: "AI request failed." },
+      { error: error.message },
       { status: 500 }
     );
   }
