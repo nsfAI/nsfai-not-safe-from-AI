@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
 export async function POST(req) {
   try {
@@ -10,7 +11,6 @@ export async function POST(req) {
     const jobDesc = (body?.jobDesc || "").toString();
     const tasks = Array.isArray(body?.tasks) ? body.tasks : [];
 
-    // Validate input
     if (!jobDesc.trim()) {
       return NextResponse.json({ error: "Job description is required." }, { status: 400 });
     }
@@ -26,10 +26,10 @@ export async function POST(req) {
       );
     }
 
-    // Prompt: force JSON-only output
+    // Force JSON-only output
     const prompt = `
-Return ONLY valid JSON (no markdown, no commentary).
-Assess AI displacement risk for this role using the job description + selected tasks.
+Return ONLY valid JSON (no markdown, no extra text).
+Assess AI displacement risk using the job description + selected tasks.
 
 Output JSON with this exact shape:
 {
@@ -42,7 +42,7 @@ Output JSON with this exact shape:
   "assumptions": [string, string]
 }
 
-Role context:
+Role:
 - jobTitle: ${jobTitle || "(not provided)"}
 - industry: ${industry || "(not provided)"}
 - seniority: ${seniority || "(not provided)"}
@@ -54,50 +54,51 @@ Selected tasks:
 ${tasks.map((t) => `- ${t}`).join("\n")}
 `.trim();
 
-    const endpoint =
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" +
-      encodeURIComponent(apiKey);
+    const genAI = new GoogleGenerativeAI(apiKey);
 
-    const geminiRes = await fetch(endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.3, maxOutputTokens: 1200 },
-      }),
-    });
+    // ✅ Use the model you said: gemini-2.0-flash
+    // Include fallbacks in case your key/account doesn't have access
+    const modelOrder = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"];
 
-    const geminiText = await geminiRes.text();
+    let rawText = null;
+    let usedModel = null;
+    let lastErr = null;
 
-    if (!geminiRes.ok) {
+    for (const modelName of modelOrder) {
+      try {
+        const model = genAI.getGenerativeModel({ model: modelName });
+        const result = await model.generateContent({
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.3, maxOutputTokens: 1200 },
+        });
+
+        rawText = result?.response?.text?.() ?? null;
+        usedModel = modelName;
+        if (rawText) break;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+
+    if (!rawText) {
       return NextResponse.json(
-        { error: `Gemini API error (${geminiRes.status})`, details: geminiText },
+        {
+          error: "Gemini failed to generate a response (model access / key issue).",
+          details: lastErr?.message || String(lastErr),
+        },
         { status: 502 }
       );
     }
 
-    // Parse Gemini response wrapper
-    let rawModelText = "";
-    try {
-      const parsed = JSON.parse(geminiText);
-      rawModelText =
-        parsed?.candidates?.[0]?.content?.parts?.map((p) => p.text).join("") || "";
-    } catch {
-      return NextResponse.json(
-        { error: "Gemini returned non-JSON wrapper.", raw: geminiText },
-        { status: 502 }
-      );
-    }
-
-    // Parse model output JSON
     let report = null;
     try {
-      report = JSON.parse(rawModelText);
+      report = JSON.parse(rawText);
     } catch {
       return NextResponse.json(
         {
-          error: "Gemini returned invalid JSON. Try again or adjust prompt.",
-          rawModelText,
+          error: "Gemini returned invalid JSON.",
+          usedModel,
+          rawModelText: rawText,
         },
         { status: 502 }
       );
@@ -106,6 +107,7 @@ ${tasks.map((t) => `- ${t}`).join("\n")}
     return NextResponse.json(
       {
         ok: true,
+        usedModel,
         input: { jobTitle, industry, seniority, tasksCount: tasks.length },
         report,
       },
