@@ -1,0 +1,246 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+
+function cx(...classes) {
+  return classes.filter(Boolean).join(" ");
+}
+
+function Sparkline({ points = [] }) {
+  // points: [{x, y}] y in 0..100
+  const w = 520;
+  const h = 120;
+  const pad = 10;
+
+  const path = useMemo(() => {
+    if (!points.length) return "";
+    const ys = points.map((p) => p.y);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    const span = Math.max(1, maxY - minY);
+
+    const toX = (i) => pad + (i * (w - pad * 2)) / Math.max(1, points.length - 1);
+    const toY = (y) => h - pad - ((y - minY) * (h - pad * 2)) / span;
+
+    return points
+      .map((p, i) => `${i === 0 ? "M" : "L"} ${toX(i).toFixed(2)} ${toY(p.y).toFixed(2)}`)
+      .join(" ");
+  }, [points]);
+
+  return (
+    <div className="w-full overflow-hidden rounded-2xl border border-black/5 bg-white">
+      <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-[120px]">
+        <path d={path} fill="none" stroke="currentColor" strokeWidth="2.5" className="text-black/80" />
+      </svg>
+    </div>
+  );
+}
+
+function Pill({ children, tone = "neutral" }) {
+  const toneCls =
+    tone === "good"
+      ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+      : tone === "warn"
+      ? "bg-amber-50 text-amber-700 border-amber-200"
+      : tone === "bad"
+      ? "bg-rose-50 text-rose-700 border-rose-200"
+      : "bg-zinc-50 text-zinc-700 border-zinc-200";
+
+  return <span className={cx("inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold", toneCls)}>{children}</span>;
+}
+
+function formatDelta(n) {
+  if (n === null || n === undefined || Number.isNaN(n)) return "—";
+  const sign = n > 0 ? "+" : "";
+  return `${sign}${n.toFixed(1)}`;
+}
+
+export default function CompressionPage() {
+  const [sector, setSector] = useState("All");
+  const [skill, setSkill] = useState("All");
+  const [range, setRange] = useState("180");
+  const [loading, setLoading] = useState(true);
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState("");
+
+  async function load() {
+    setLoading(true);
+    setErr("");
+    try {
+      const qs = new URLSearchParams({ sector, skill, range });
+      const res = await fetch(`/api/compression?${qs.toString()}`, { cache: "no-store" });
+      const json = await res.json();
+      if (!res.ok || !json?.ok) throw new Error(json?.error || `Request failed (${res.status})`);
+      setData(json);
+    } catch (e) {
+      setErr(e?.message || "Failed to load");
+      setData(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sector, skill, range]);
+
+  const latest = data?.latest;
+  const series = data?.series || [];
+
+  const tone = (score) => {
+    if (score >= 75) return "bad";
+    if (score >= 55) return "warn";
+    if (score >= 35) return "neutral";
+    return "good";
+  };
+
+  return (
+    <main className="mx-auto w-full max-w-6xl px-4 pb-16 pt-10">
+      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Compression Index</h1>
+          <p className="mt-1 text-sm text-black/60">
+            Live enterprise signals that correlate with AI-driven labor compression (not just “bad economy” vibes).
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            className="h-10 rounded-xl border border-black/10 bg-white px-3 text-sm"
+            value={sector}
+            onChange={(e) => setSector(e.target.value)}
+          >
+            {["All", "Tech", "Finance", "Healthcare", "Retail", "Manufacturing", "Energy", "Public Sector", "Other"].map((s) => (
+              <option key={s} value={s}>
+                Sector: {s}
+              </option>
+            ))}
+          </select>
+
+          <select
+            className="h-10 rounded-xl border border-black/10 bg-white px-3 text-sm"
+            value={skill}
+            onChange={(e) => setSkill(e.target.value)}
+          >
+            {[
+              "All",
+              "Software Engineering",
+              "Data / Analytics",
+              "Finance / Accounting",
+              "Sales",
+              "Customer Support",
+              "Marketing",
+              "Operations",
+              "Legal",
+              "Healthcare Clinical",
+              "Skilled Trades",
+            ].map((s) => (
+              <option key={s} value={s}>
+                Skill: {s}
+              </option>
+            ))}
+          </select>
+
+          <select
+            className="h-10 rounded-xl border border-black/10 bg-white px-3 text-sm"
+            value={range}
+            onChange={(e) => setRange(e.target.value)}
+          >
+            {[
+              { label: "90d", value: "90" },
+              { label: "180d", value: "180" },
+              { label: "365d", value: "365" },
+            ].map((r) => (
+              <option key={r.value} value={r.value}>
+                Range: {r.label}
+              </option>
+            ))}
+          </select>
+
+          <button
+            onClick={load}
+            className="h-10 rounded-xl bg-black px-4 text-sm font-semibold text-white hover:bg-black/90"
+          >
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      {/* Top KPI row */}
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="rounded-3xl border border-black/5 bg-white p-6 shadow-[0_8px_30px_rgba(0,0,0,0.05)]">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold text-black/70">Compression Index</p>
+              <p className="mt-2 text-4xl font-semibold tracking-tight">
+                {loading ? "—" : `${latest?.index ?? "—"}`}
+                <span className="text-lg font-semibold text-black/50"> / 100</span>
+              </p>
+              <div className="mt-3 flex items-center gap-2">
+                <Pill tone={tone(latest?.index ?? 0)}>
+                  {latest?.band || "—"}
+                </Pill>
+                <span className="text-xs text-black/60">
+                  Δ {formatDelta(latest?.delta)} (vs prev)
+                </span>
+              </div>
+            </div>
+
+            <div className="text-right">
+              <p className="text-xs text-black/50">Scope</p>
+              <p className="mt-1 text-sm font-semibold">{sector} · {skill}</p>
+              <p className="mt-1 text-xs text-black/50">Updated: {latest?.asOf || "—"}</p>
+            </div>
+          </div>
+
+          <div className="mt-5">
+            <Sparkline points={series.map((d, i) => ({ x: i, y: d.index }))} />
+          </div>
+
+          <p className="mt-3 text-xs text-black/55">
+            Index is a weighted blend of layoffs clustering, job posting decline, and AI adoption proxy.
+          </p>
+
+          {data?.meta?.mode === "mock" && (
+            <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+              Using <b>mock</b> data (no data source env vars detected). This is expected until you wire real feeds.
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-3xl border border-black/5 bg-white p-6 shadow-[0_8px_30px_rgba(0,0,0,0.05)]">
+          <p className="text-sm font-semibold text-black/70">Signal breakdown</p>
+
+          <div className="mt-4 grid gap-3">
+            {[
+              { key: "layoffs", title: "Layoff clustering", desc: "Disproportionate layoffs vs baseline", val: latest?.layoffsScore },
+              { key: "jobs", title: "Job posting decline", desc: "Posting velocity vs median baseline", val: latest?.jobsScore },
+              { key: "adoption", title: "AI adoption proxy", desc: "AI requirements / tool mentions trend", val: latest?.adoptionScore },
+            ].map((s) => (
+              <div key={s.key} className="rounded-2xl border border-black/5 p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-semibold">{s.title}</p>
+                    <p className="mt-1 text-xs text-black/55">{s.desc}</p>
+                  </div>
+                  <Pill tone={tone(s.val ?? 0)}>{loading ? "—" : `${s.val ?? "—"}`}</Pill>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-4 rounded-2xl border border-black/5 bg-zinc-50 p-4 text-sm text-black/70">
+            <b>Interpretation:</b> high score = labor is compressing faster in this sector/skill. It does <i>not</i> mean “job extinct tomorrow.”
+          </div>
+
+          {err && (
+            <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+              {err}
+            </div>
+          )}
+        </div>
+      </div>
+    </main>
+  );
+}
