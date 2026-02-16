@@ -432,10 +432,6 @@ export default function Page() {
                       <li key={i}>{x}</li>
                     ))}
                   </ul>
-
-                  <div className="mt-4 text-xs text-neutral-500">
-                    Model: {report?.meta?.model || "gemini-2.0-flash"}
-                  </div>
                 </div>
               </div>
             </>
