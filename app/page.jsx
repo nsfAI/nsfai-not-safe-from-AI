@@ -133,12 +133,13 @@ export default function Page() {
       <div className="sticky top-0 z-50 border-b border-black/5 bg-white/70 backdrop-blur">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
           <div className="flex items-center gap-3">
-            <div className="grid h-9 w-9 place-items-center rounded-full bg-black font-semibold text-white">
-              N
-            </div>
-
+            <img
+  src="/nsfAI-logo.png"
+  alt="nsfAI"
+  className="h-9 w-9 rounded-lg object-contain"
+/>
             <div className="leading-tight">
-              <div className="text-sm font-semibold tracking-tight">NSFAI</div>
+              <div className="text-sm font-semibold tracking-tight">nsfAI</div>
               <div className="text-xs text-neutral-500">
                 AI displacement risk — based on tasks, not titles.
               </div>
