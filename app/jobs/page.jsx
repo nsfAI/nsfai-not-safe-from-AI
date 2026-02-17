@@ -12,9 +12,12 @@ export default function JobsPage() {
   const [loading, setLoading] = useState(false);
   const [meta, setMeta] = useState({ total: 0 });
   const [results, setResults] = useState([]);
+  const [error, setError] = useState("");
 
   async function runSearch(nextQ = query, nextScenario = scenario) {
     setLoading(true);
+    setError("");
+
     try {
       const res = await fetch(
         `/api/jobs/search?q=${encodeURIComponent(nextQ)}&scenario=${encodeURIComponent(
@@ -23,13 +26,24 @@ export default function JobsPage() {
         { cache: "no-store" }
       );
 
-      const data = await res.json();
+      const data = await res.json().catch(() => null);
+
+      if (!data || data.ok === false) {
+        setMeta({ total: 0 });
+        setResults([]);
+        setError(
+          data?.error ||
+            "Search failed. If this is production, confirm OPENSEARCH_URL is set on Vercel."
+        );
+        return;
+      }
 
       setMeta({ total: data?.total ?? 0 });
       setResults(Array.isArray(data?.results) ? data.results : []);
     } catch {
       setMeta({ total: 0 });
       setResults([]);
+      setError("Network error. Try again.");
     } finally {
       setLoading(false);
     }
@@ -52,25 +66,38 @@ export default function JobsPage() {
         <div>
           <h1 className="text-2xl font-bold">AI-Resilient Job Finder</h1>
           <p className="mt-1 text-sm text-black/60 dark:text-white/60">
-            Search roles. Results are ranked by relevance × resilience signals. (V1 = seeded data + OpenSearch)
+            Search roles. Results are ranked by relevance × resilience signals.
+            (V1 = seeded data + OpenSearch)
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-black/60 dark:text-white/60">Scenario</span>
-          <select
-            value={scenario}
-            onChange={(e) => {
-              const next = e.target.value;
-              setScenario(next);
-              runSearch(query, next);
-            }}
-            className="rounded-xl border border-black/10 bg-white px-3 py-2 text-sm dark:border-white/20 dark:bg-[#141414]"
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {/* Back to Home */}
+          <a
+            href="/"
+            className="rounded-xl border border-black/10 bg-white px-3 py-2 text-sm shadow-sm hover:bg-neutral-50 dark:border-white/20 dark:bg-[#141414] dark:text-white dark:hover:bg-white/10"
           >
-            <option value="conservative">Conservative</option>
-            <option value="moderate">Moderate</option>
-            <option value="aggressive">Aggressive</option>
-          </select>
+            ← Back
+          </a>
+
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-black/60 dark:text-white/60">
+              Scenario
+            </span>
+            <select
+              value={scenario}
+              onChange={(e) => {
+                const next = e.target.value;
+                setScenario(next);
+                runSearch(query, next);
+              }}
+              className="rounded-xl border border-black/10 bg-white px-3 py-2 text-sm dark:border-white/20 dark:bg-[#141414] dark:text-white"
+            >
+              <option value="conservative">Conservative</option>
+              <option value="moderate">Moderate</option>
+              <option value="aggressive">Aggressive</option>
+            </select>
+          </div>
         </div>
       </div>
 
@@ -96,18 +123,27 @@ export default function JobsPage() {
         </button>
       </div>
 
-      <div className="mt-3 text-xs text-black/50 dark:text-white/50">{subtitle}</div>
+      <div className="mt-3 text-xs text-black/50 dark:text-white/50">
+        {subtitle}
+      </div>
 
       <div className="mt-8 space-y-4">
-        {!loading && results.length === 0 && (
-          <div className="rounded-2xl border border-black/10 bg-white p-6 text-sm text-black/70 dark:border-white/20 dark:bg-[#141414] dark:text-white/70">
-            No results yet. Try broader terms (example: “finance” instead of “controller”) or clear the search and hit Search.
+        {!!error && (
+          <div className="rounded-2xl border border-red-200 bg-red-50 p-6 text-sm text-red-700 dark:border-red-500/30 dark:bg-red-950/30 dark:text-red-200">
+            {error}
           </div>
         )}
 
-        {results.map((r) => (
+        {!loading && !error && results.length === 0 && (
+          <div className="rounded-2xl border border-black/10 bg-white p-6 text-sm text-black/70 dark:border-white/20 dark:bg-[#141414] dark:text-white/70">
+            No results yet. Try broader terms (example: “finance” instead of
+            “controller”) or clear the search and hit Search.
+          </div>
+        )}
+
+        {results.map((r, idx) => (
           <div
-            key={r.id || `${r.title}-${r.company}-${r.location}`}
+            key={r.id || `${r.title}-${r.company}-${r.location}-${idx}`}
             className="rounded-2xl border border-black/10 bg-white p-6 dark:border-white/20 dark:bg-[#141414]"
           >
             <div className="flex items-start justify-between gap-4">
@@ -116,7 +152,8 @@ export default function JobsPage() {
                   {r.title || "Untitled role"}
                 </div>
                 <div className="mt-1 text-sm text-black/60 dark:text-white/60">
-                  {(r.company || "Unknown company") + (r.location ? ` — ${r.location}` : "")}
+                  {(r.company || "Unknown company") +
+                    (r.location ? ` — ${r.location}` : "")}
                 </div>
 
                 <div className="mt-3 text-sm text-black/80 dark:text-white/80">
@@ -132,7 +169,9 @@ export default function JobsPage() {
               </div>
 
               <div className="text-right">
-                <div className="text-xs text-black/50 dark:text-white/50">Resilience</div>
+                <div className="text-xs text-black/50 dark:text-white/50">
+                  Resilience
+                </div>
                 <div className="text-2xl font-bold text-green-600">
                   {Number(r.resilience_score ?? 0)}
                 </div>
