@@ -1,7 +1,7 @@
 // app/api/labor/route.js
 // Pulls (1) BLS unemployment rate (monthly) and (2) layoff headlines (multi-source, daily-ish)
 
-export const revalidate = 1800; // 30 min (feel free to set 600 for 10 min)
+export const dynamic = "force-dynamic";
 
 function safeText(s) {
   return String(s ?? "").replace(/\s+/g, " ").trim();
@@ -121,7 +121,7 @@ function parseRssOrAtom(xml, { sourceLabel }) {
 
 async function fetchFeed(url, sourceLabel) {
   const res = await fetch(url, {
-    cache: "force-cache",
+    cache: "no-store",
     headers: {
       // a light UA helps some feeds that block default fetch
       "User-Agent": "nsfAI-labor-ticker/1.0 (+https://your-site-domain)",
