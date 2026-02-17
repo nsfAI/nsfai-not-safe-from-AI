@@ -1,7 +1,6 @@
 // app/api/jobs/search/route.js
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const runtime = "nodejs";
 
 import client from "../../../../lib/opensearch";
 
