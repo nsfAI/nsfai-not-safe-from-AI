@@ -1,14 +1,27 @@
 // app/api/labor/route.js
-// Pulls (1) BLS unemployment rate (monthly) and (2) Layoffs.fyi latest posts (daily-ish proxy)
+// Pulls (1) BLS unemployment rate (monthly) and (2) layoff headlines (multi-source, daily-ish)
 
-export const revalidate = 3600; // 1 hour
+export const revalidate = 1800; // 30 min (feel free to set 600 for 10 min)
 
 function safeText(s) {
   return String(s ?? "").replace(/\s+/g, " ").trim();
 }
 
-// ---- BLS: U-3 Unemployment Rate (Series: LNS14000000) ----
-// Docs: https://www.bls.gov/developers/api_signature_v2.htm 
+function parseDate(d) {
+  const t = Date.parse(d || "");
+  return Number.isFinite(t) ? t : 0;
+}
+
+function normalizeTitle(t) {
+  return safeText(t)
+    .toLowerCase()
+    .replace(/\b(inc|llc|ltd|corp|corporation|company)\b/g, "")
+    .replace(/[^a-z0-9\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// -------------------- BLS: U-3 Unemployment Rate (LNS14000000) --------------------
 async function fetchUnemploymentRate() {
   const now = new Date();
   const endYear = now.getFullYear();
@@ -17,13 +30,11 @@ async function fetchUnemploymentRate() {
   const res = await fetch("https://api.bls.gov/publicAPI/v2/timeseries/data/", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    // No API key required for light usage; add registrationkey if you have one.
     body: JSON.stringify({
       seriesid: ["LNS14000000"],
       startyear: String(startYear),
       endyear: String(endYear),
     }),
-    // Next will cache per revalidate above; also avoid edge quirks
     cache: "force-cache",
   });
 
@@ -33,93 +44,154 @@ async function fetchUnemploymentRate() {
   const series = json?.Results?.series?.[0];
   const data = series?.data || [];
 
-  // BLS returns newest first
   const latest = data[0];
   if (!latest) throw new Error("BLS returned no data");
 
-  const value = Number(latest.value);
-  const periodName = latest.periodName; // e.g., "January"
-  const year = latest.year;
-
   return {
-    value, // percent (e.g., 3.9)
-    label: `${periodName} ${year}`,
+    value: Number(latest.value), // percent
+    label: `${latest.periodName} ${latest.year}`,
     seriesId: "LNS14000000",
   };
 }
 
-// ---- Layoffs.fyi: "daily-ish" announcements proxy ----
-// Prefer RSS if available; fallback to scraping recent titles from author page
-async function fetchLayoffsFyiHeadlines() {
-  // Try common WP feed endpoints
-  const feedUrls = [
-    "https://layoffs.fyi/feed/",
-    "https://layoffs.fyi/category/layoff/feed/",
-    "https://layoffs.fyi/tag/layoff/feed/",
-  ];
+// -------------------- RSS parsing (simple + robust enough) --------------------
+// Tries RSS (<item>) and Atom (<entry>) patterns.
+function parseRssOrAtom(xml, { sourceLabel }) {
+  const items = [];
 
-  for (const url of feedUrls) {
-    try {
-      const res = await fetch(url, { cache: "force-cache" });
-      if (!res.ok) continue;
+  // RSS <item>
+  const rssItems = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)].map((m) => m[1]);
+  for (const block of rssItems) {
+    const title =
+      block.match(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>/i)?.[1] ||
+      block.match(/<title>([\s\S]*?)<\/title>/i)?.[1] ||
+      "";
+    const link =
+      block.match(/<link>([\s\S]*?)<\/link>/i)?.[1] ||
+      block.match(/<guid[^>]*>([\s\S]*?)<\/guid>/i)?.[1] ||
+      "";
+    const pubDate = block.match(/<pubDate>([\s\S]*?)<\/pubDate>/i)?.[1] || "";
 
-      const xml = await res.text();
+    const t = safeText(title);
+    const l = safeText(link);
+    if (!t || !l) continue;
 
-      // Very small RSS parser (titles + links)
-      const items = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)]
-        .slice(0, 8)
-        .map((m) => m[1]);
+    items.push({
+      title: t,
+      link: l,
+      pubDate: safeText(pubDate),
+      ts: parseDate(pubDate),
+      source: sourceLabel,
+    });
+  }
 
-      const parsed = items
-        .map((block) => {
-          const title = safeText(
-            (block.match(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>/)?.[1] ||
-              block.match(/<title>([\s\S]*?)<\/title>/)?.[1] ||
-              "")
-          );
-          const link = safeText(block.match(/<link>([\s\S]*?)<\/link>/)?.[1] || "");
-          const pubDate = safeText(block.match(/<pubDate>([\s\S]*?)<\/pubDate>/)?.[1] || "");
-          if (!title || !link) return null;
-          return { title, link, pubDate };
-        })
-        .filter(Boolean);
+  // Atom <entry>
+  if (!items.length) {
+    const entries = [...xml.matchAll(/<entry>([\s\S]*?)<\/entry>/gi)].map((m) => m[1]);
+    for (const block of entries) {
+      const title =
+        block.match(/<title[^>]*><!\[CDATA\[([\s\S]*?)\]\]><\/title>/i)?.[1] ||
+        block.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ||
+        "";
+      const link =
+        block.match(/<link[^>]+href="([^"]+)"/i)?.[1] ||
+        block.match(/<id>([\s\S]*?)<\/id>/i)?.[1] ||
+        "";
+      const pubDate =
+        block.match(/<updated>([\s\S]*?)<\/updated>/i)?.[1] ||
+        block.match(/<published>([\s\S]*?)<\/published>/i)?.[1] ||
+        "";
 
-      if (parsed.length) return { source: "rss", items: parsed };
-    } catch {
-      // try next
+      const t = safeText(title);
+      const l = safeText(link);
+      if (!t || !l) continue;
+
+      items.push({
+        title: t,
+        link: l,
+        pubDate: safeText(pubDate),
+        ts: parseDate(pubDate),
+        source: sourceLabel,
+      });
     }
   }
 
-  // Fallback: scrape the author page list (not perfect, but works when feed is blocked)
-  const fallbackUrl = "https://layoffs.fyi/author/webmasterlayoffs-fyi/";
-  const res = await fetch(fallbackUrl, { cache: "force-cache" });
-  if (!res.ok) throw new Error(`Layoffs.fyi fallback fetch failed: ${res.status}`);
-  const html = await res.text();
+  return items;
+}
 
-  // Grab up to ~8 post links/titles from anchor tags
-  const anchors = [...html.matchAll(/<a[^>]+href="([^"]+)"[^>]*>([^<]+)<\/a>/g)]
-    .map((m) => ({ link: m[1], title: safeText(m[2]) }))
-    .filter((x) => x.link?.includes("layoffs.fyi/") && x.title && x.title.length > 6);
+async function fetchFeed(url, sourceLabel) {
+  const res = await fetch(url, {
+    cache: "force-cache",
+    headers: {
+      // a light UA helps some feeds that block default fetch
+      "User-Agent": "nsfAI-labor-ticker/1.0 (+https://your-site-domain)",
+      Accept: "application/rss+xml, application/atom+xml, text/xml, application/xml;q=0.9,*/*;q=0.8",
+    },
+  });
+  if (!res.ok) throw new Error(`Feed failed ${res.status} for ${sourceLabel}`);
+  const xml = await res.text();
+  return parseRssOrAtom(xml, { sourceLabel });
+}
 
-  // Dedupe by link
-  const seen = new Set();
-  const items = [];
-  for (const a of anchors) {
-    const link = a.link.split("#")[0];
-    if (seen.has(link)) continue;
-    seen.add(link);
-    items.push({ title: a.title, link, pubDate: "" });
-    if (items.length >= 8) break;
+// -------------------- Layoff headlines (multi-source) --------------------
+async function fetchLayoffHeadlines() {
+  // ✅ Add/Remove sources here.
+  // Keep it mostly RSS/Atom to avoid scraping bans.
+  const FEEDS = [
+    // Layoffs.fyi (your existing priority)
+    { label: "Layoffs.fyi", url: "https://layoffs.fyi/feed/" },
+
+    // Google News RSS query (very “flooded”)
+    // You can tweak queries to get different vibes
+    {
+      label: "Google News",
+      url: "https://news.google.com/rss/search?q=layoffs+OR+laid+off+OR+job+cuts+when:7d&hl=en-US&gl=US&ceid=US:en",
+    },
+    {
+      label: "Google News (Tech)",
+      url: "https://news.google.com/rss/search?q=tech+layoffs+OR+startup+layoffs+when:14d&hl=en-US&gl=US&ceid=US:en",
+    },
+    {
+      label: "Google News (Banking)",
+      url: "https://news.google.com/rss/search?q=bank+layoffs+OR+finance+job+cuts+when:14d&hl=en-US&gl=US&ceid=US:en",
+    },
+  ];
+
+  // Pull all feeds in parallel (and don’t die if one fails)
+  const results = await Promise.allSettled(FEEDS.map((f) => fetchFeed(f.url, f.label)));
+
+  let merged = [];
+  for (const r of results) {
+    if (r.status === "fulfilled") merged = merged.concat(r.value);
   }
 
-  return { source: "scrape", items };
+  // If everything failed, return empty list (front-end shows “loading”)
+  if (!merged.length) return { items: [] };
+
+  // Dedupe by normalized title (helps remove repeats across sources)
+  const seen = new Set();
+  const deduped = [];
+  for (const it of merged) {
+    const key = normalizeTitle(it.title);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(it);
+  }
+
+  // Sort newest first (fallback ts=0 puts unknown dates at bottom)
+  deduped.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+
+  // Limit to keep payload light
+  const items = deduped.slice(0, 16).map(({ ts, ...rest }) => rest);
+
+  return { items };
 }
 
 export async function GET() {
   try {
     const [unemployment, layoffs] = await Promise.all([
       fetchUnemploymentRate(),
-      fetchLayoffsFyiHeadlines(),
+      fetchLayoffHeadlines(),
     ]);
 
     return Response.json({
