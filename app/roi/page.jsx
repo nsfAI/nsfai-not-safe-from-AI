@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import {
   MAJORS,
   CITIES,
@@ -10,6 +10,7 @@ import {
   pickCity,
   pickSchoolType,
   pickLifestyle,
+  resolveAutoTuition,
 } from "./benchmarks";
 
 function cx(...classes) {
@@ -33,12 +34,14 @@ function clamp(n, a, b) {
 }
 
 /**
- * Simple human capital model:
- * - school years: negative cashflows (tuition + school living - scholarship)
- * - after grad: after-tax salary - living after grad - debt service
- * - NPV at discount rate
- * - break-even year (cumulative becomes >= 0)
- * - optional compression scenario haircuts salary growth based on AI exposure
+ * Human capital model:
+ * - School years: negative cashflows (tuition + living - scholarship)
+ * - Work years: after-tax salary - living after grad - debt service
+ * - NPV with discount rate
+ * - break-even year
+ *
+ * Special handling: Medicine (MD/DO) track includes training years at a lower salary
+ * before switching to attending salary.
  */
 function runModel({
   yearsInSchool,
@@ -58,6 +61,10 @@ function runModel({
   discountRate,
   aiExposure,
   scenario, // "base" | "compression"
+  // Optional medical-style training phase
+  trainingYears = 0,
+  trainingSalary = 0,
+  attendingStartSalary = null,
 }) {
   const YS = clamp(Math.round(yearsInSchool), 0, 12);
   const H = clamp(Math.round(careerHorizon), 1, 60);
@@ -75,7 +82,7 @@ function runModel({
   const g2 = clamp(plateauGrowth - compHaircut * 0.6, -0.05, 0.10);
   const pYear = clamp((plateauYear ?? 15) - compPlateauPull, 3, 35);
 
-  // Debt payment (annual) simple amortization
+  // Debt payment (annual) amortization
   const r = clamp(debtApr, 0, 0.35);
   const n = clamp(Math.round(repayYears), 0, 40);
 
@@ -83,38 +90,48 @@ function runModel({
   if (debtPrincipal > 0 && n > 0) {
     const i = r; // annual rate
     if (i === 0) annualDebtPay = debtPrincipal / n;
-    else {
-      annualDebtPay =
-        (debtPrincipal * i) / (1 - Math.pow(1 + i, -n));
-    }
+    else annualDebtPay = (debtPrincipal * i) / (1 - Math.pow(1 + i, -n));
   }
 
   const cashflows = [];
 
-  // School years (1..YS): negative
+  // School years
   for (let y = 1; y <= YS; y++) {
     const cf = -tuitionPerYear - livingSchool + scholarshipPerYear;
     cashflows.push(cf);
   }
 
-  // Work years (1..H): positive net after tax, living, debt pay
+  // Work years
   let salary = startSalary;
+
   for (let y = 1; y <= H; y++) {
-    const yearIndex = y; // 1..H post-grad
-    const gross = salary;
+    // If trainingYears exists, we use training salary first, then switch to attending salary
+    let gross;
+    if (trainingYears > 0 && y <= trainingYears) {
+      gross = trainingSalary;
+    } else if (attendingStartSalary !== null && attendingStartSalary !== undefined) {
+      // once training ends, start at attending salary, then grow
+      if (y === trainingYears + 1) salary = attendingStartSalary;
+      gross = salary;
+    } else {
+      gross = salary;
+    }
 
     const afterTax = gross * (1 - tr);
-    const debtPay = yearIndex <= n ? annualDebtPay : 0;
+    const debtPay = y <= n ? annualDebtPay : 0;
 
     const cf = afterTax - livingAfterGrad - debtPay;
     cashflows.push(cf);
 
-    // Grow salary
-    if (yearIndex < pYear) salary = salary * (1 + g1);
-    else salary = salary * (1 + g2);
+    // Grow salary (only if not in training year)
+    const inTraining = trainingYears > 0 && y <= trainingYears;
+    if (!inTraining) {
+      if (y < pYear) salary = salary * (1 + g1);
+      else salary = salary * (1 + g2);
+    }
   }
 
-  // NPV + cumulative for break-even
+  // NPV + break-even
   let npv = 0;
   let cum = 0;
   let breakEvenYear = null;
@@ -126,10 +143,7 @@ function runModel({
 
     cum += cf;
 
-    // break-even in "calendar years from now" (school+work)
-    if (breakEvenYear === null && cum >= 0) {
-      breakEvenYear = t + 1;
-    }
+    if (breakEvenYear === null && cum >= 0) breakEvenYear = t + 1;
   }
 
   return {
@@ -137,13 +151,7 @@ function runModel({
     breakEvenYear: breakEvenYear ?? "—",
     annualDebtPay,
     cashflows,
-    meta: {
-      compHaircut,
-      compPlateauPull,
-      g1,
-      g2,
-      pYear,
-    },
+    meta: { compHaircut, compPlateauPull, g1, g2, pYear },
   };
 }
 
@@ -152,19 +160,19 @@ export default function ROIPage() {
   const [majorText, setMajorText] = useState("Accounting");
   const [majorBenchmark, setMajorBenchmark] = useState("Accounting (BS)");
   const [cityKey, setCityKey] = useState("New York, NY");
-  const [schoolType, setSchoolType] = useState("In-State Public");
+  const [schoolType, setSchoolType] = useState("In-State Public (UG)");
   const [lifestyle, setLifestyle] = useState("Normal");
 
   // Advanced toggle
   const [showAdvanced, setShowAdvanced] = useState(false);
 
-  // Manual inputs (still available)
+  // Manual inputs (Advanced)
   const [yearsInSchool, setYearsInSchool] = useState(4);
   const [careerHorizon, setCareerHorizon] = useState(30);
   const [tuitionPerYear, setTuitionPerYear] = useState(12000);
   const [livingSchool, setLivingSchool] = useState(20000);
-  const [scholarshipPerYear, setScholarshipPerYear] = useState(2000);
-  const [debtPrincipal, setDebtPrincipal] = useState(60000);
+  const [scholarshipPerYear, setScholarshipPerYear] = useState(0);
+  const [debtPrincipal, setDebtPrincipal] = useState(0);
   const [debtApr, setDebtApr] = useState(0.065);
   const [repayYears, setRepayYears] = useState(10);
   const [startSalary, setStartSalary] = useState(72000);
@@ -179,36 +187,64 @@ export default function ROIPage() {
   const [ran, setRan] = useState(false);
 
   const derived = useMemo(() => {
-    const m = pickMajor(majorText, majorBenchmark);
-    const c = pickCity(cityKey);
-    const s = pickSchoolType(schoolType);
-    const l = pickLifestyle(lifestyle);
+    const major = pickMajor(majorText, majorBenchmark);
+    const city = pickCity(cityKey);
+    const lifestyleObj = pickLifestyle(lifestyle);
 
-    const autoTuition = s.tuitionPerYear;
-    const autoLivingSchool = Math.round(c.livingSchool * l.livingMult);
-    const autoLivingAfter = Math.round(c.livingAfter * l.livingMult);
-    const autoStartSalary = Math.round(m.startSalary * c.salaryMult);
+    // Tuition: automatically select correct tier for major (UG vs Professional)
+    const tuitionResolved = resolveAutoTuition(major, schoolType);
+    const tuition = tuitionResolved.tuitionPerYear;
+
+    const livingSchoolAuto = Math.round(city.livingSchool * lifestyleObj.livingMult);
+    const livingAfterAuto = Math.round(city.livingAfter * lifestyleObj.livingMult);
+
+    // Salary: professional MD/DO uses attendingStartSalary (post-training) and training salary
+    const baseStart =
+      major.attendingStartSalary != null ? major.attendingStartSalary : major.startSalary;
+
+    const startSalaryAuto = Math.round(baseStart * city.salaryMult);
+
+    // For med, training salary should also be city-adjusted (small effect)
+    const trainingSalaryAuto =
+      major.trainingSalary != null ? Math.round(major.trainingSalary * (city.salaryMult * 0.95)) : 0;
 
     return {
-      major: m,
-      city: c,
-      school: s,
-      lifestyle: l,
+      major,
+      city,
+      lifestyle: lifestyleObj,
       auto: {
-        tuitionPerYear: autoTuition,
-        livingSchool: autoLivingSchool,
-        livingAfterGrad: autoLivingAfter,
-        startSalary: autoStartSalary,
-        salaryGrowth: m.growth,
-        plateauYear: m.plateauYear,
-        plateauGrowth: m.plateauGrowth,
-        taxRate: c.taxRate,
-        aiExposure: m.aiExposure,
+        schoolTypeCorrected: tuitionResolved.correctedSchoolTypeKey,
+        tuitionPerYear: tuition,
+        livingSchool: livingSchoolAuto,
+        livingAfterGrad: livingAfterAuto,
+        // If major has attending salary, we store both:
+        attendingStartSalary: major.attendingStartSalary != null ? startSalaryAuto : null,
+        trainingSalary: trainingSalaryAuto,
+        trainingYears: major.trainingYears || 0,
+
+        startSalary: major.attendingStartSalary != null ? trainingSalaryAuto : startSalaryAuto, // start at training if med
+        salaryGrowth: major.growth,
+        plateauYear: major.plateauYear,
+        plateauGrowth: major.plateauGrowth,
+        taxRate: city.taxRate,
+        aiExposure: major.aiExposure,
+        yearsInSchool: major.yearsInSchoolDefault,
+      },
+      warnings: {
+        correctedSchoolType: tuitionResolved.correctedSchoolTypeKey !== schoolType,
+        majorTrack: major.track,
       },
     };
   }, [majorText, majorBenchmark, cityKey, schoolType, lifestyle]);
 
-  // When NOT in advanced mode: we run with auto inputs (but still allow your manual model behind the toggle)
+  // If we auto-corrected schoolType tier, update UI so user sees the truth.
+  useEffect(() => {
+    if (derived?.auto?.schoolTypeCorrected && derived.auto.schoolTypeCorrected !== schoolType) {
+      setSchoolType(derived.auto.schoolTypeCorrected);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [derived?.auto?.schoolTypeCorrected]);
+
   const modelInputs = useMemo(() => {
     if (showAdvanced) {
       return {
@@ -228,19 +264,28 @@ export default function ROIPage() {
         livingAfterGrad: Number(livingAfterGrad),
         discountRate: Number(discountRate),
         aiExposure: Number(aiExposure),
+
+        // If user chooses major that includes training, include it even in advanced mode unless they override via inputs
+        trainingYears: derived.auto.trainingYears || 0,
+        trainingSalary: derived.auto.trainingSalary || 0,
+        attendingStartSalary: derived.auto.attendingStartSalary,
       };
     }
 
     // Easy Mode auto defaults
     return {
-      yearsInSchool: 4,
+      yearsInSchool: derived.auto.yearsInSchool,
       careerHorizon: 30,
       tuitionPerYear: derived.auto.tuitionPerYear,
       livingSchool: derived.auto.livingSchool,
       scholarshipPerYear: 0,
+
+      // IMPORTANT: default debt = 0 in easy mode (prevents fake precision).
+      // Users can model debt in Advanced mode.
       debtPrincipal: 0,
       debtApr: 0.065,
       repayYears: 10,
+
       startSalary: derived.auto.startSalary,
       salaryGrowth: derived.auto.salaryGrowth,
       plateauYear: derived.auto.plateauYear,
@@ -249,6 +294,10 @@ export default function ROIPage() {
       livingAfterGrad: derived.auto.livingAfterGrad,
       discountRate: 0.07,
       aiExposure: derived.auto.aiExposure,
+
+      trainingYears: derived.auto.trainingYears || 0,
+      trainingSalary: derived.auto.trainingSalary || 0,
+      attendingStartSalary: derived.auto.attendingStartSalary,
     };
   }, [
     showAdvanced,
@@ -289,17 +338,30 @@ export default function ROIPage() {
         ? `Compression haircut applied: ${pct(comp.compHaircut)} to wage growth; plateau pulled earlier by ${comp.compPlateauPull} year(s).`
         : `Base scenario: no compression haircut applied.`;
 
+    const trainingNote =
+      modelInputs.trainingYears > 0
+        ? `Training phase modeled: ${modelInputs.trainingYears} year(s) at ${money(modelInputs.trainingSalary)} (annual), then switches to attending salary ${money(modelInputs.attendingStartSalary)}.`
+        : `No training phase modeled for this major.`;
+
+    const precisionNote =
+      !showAdvanced
+        ? `Easy Mode uses benchmark estimates (not your exact school tuition, grants, or debt). Toggle Advanced for precision.`
+        : `Advanced mode: you are overriding the benchmark assumptions.`;
+
     return [
-      `This model treats education as a capital investment: upfront costs during ${modelInputs.yearsInSchool} school-year(s), followed by after-tax cashflows over a ${modelInputs.careerHorizon}-year horizon discounted at ${pct(modelInputs.discountRate)}.`,
-      `Estimated all-in school burn is ${money(allInSchoolBurn)} (tuition + living − scholarships), excluding opportunity-cost wages while studying.`,
+      precisionNote,
+      `Education treated as capital allocation: upfront costs during ${modelInputs.yearsInSchool} school-year(s), followed by after-tax cashflows over a ${modelInputs.careerHorizon}-year horizon discounted at ${pct(modelInputs.discountRate)}.`,
+      `All-in school burn: ${money(allInSchoolBurn)} (tuition + living − scholarships), excluding opportunity-cost wages while studying.`,
       modelInputs.debtPrincipal > 0
-        ? `Debt increases fragility: modeled monthly payment is ${money(monthlyDebt)}. High fixed payments reduce optionality in early career years.`
-        : `No debt assumed in this run (you can toggle Advanced to model debt).`,
+        ? `Debt fragility: modeled monthly payment ${money(monthlyDebt)}. High fixed payments reduce optionality in early career years.`
+        : `No debt assumed in this run (toggle Advanced to model debt).`,
+      trainingNote,
       compText,
-      `AI exposure input: ${modelInputs.aiExposure}/10. Higher values reduce the growth slope and pull plateau earlier in the compression scenario.`,
-      `Break-even (cumulative cashflows turn non-negative): ${outputs.breakEvenYear === "—" ? "not reached" : `year ${outputs.breakEvenYear}`}.`,
+      `AI exposure: ${modelInputs.aiExposure}/10. Higher values reduce the growth slope and pull plateau earlier in the compression scenario.`,
+      `Break-even: ${outputs.breakEvenYear === "—" ? "not reached" : `year ${outputs.breakEvenYear}`}.`,
+      `Major intelligence notes: ${derived.major.notes}`,
     ];
-  }, [outputs, modelInputs, scenario]);
+  }, [outputs, modelInputs, scenario, derived.major.notes, showAdvanced]);
 
   return (
     <main className="mx-auto w-full max-w-6xl px-4 pb-16 pt-8">
@@ -346,7 +408,7 @@ export default function ROIPage() {
           <div className="mb-4">
             <div className="text-sm font-semibold">Inputs</div>
             <div className="mt-1 text-sm text-black/60">
-              Easy mode auto-fills tuition, salary, and cost-of-living. Advanced mode lets users override everything.
+              Easy Mode auto-fills tuition, salary, and cost-of-living. Advanced mode lets users override everything.
             </div>
           </div>
 
@@ -354,7 +416,7 @@ export default function ROIPage() {
           <div className="rounded-2xl border border-black/5 bg-zinc-50 p-4">
             <div className="text-sm font-semibold">Easy Mode</div>
             <div className="mt-1 text-xs text-black/55">
-              Choose 4 things. We auto-calculate the rest.
+              Choose 4 things. We auto-calculate the rest. (Benchmark estimates — toggle Advanced for exact inputs.)
             </div>
 
             <div className="mt-4 grid gap-3 md:grid-cols-2">
@@ -363,9 +425,12 @@ export default function ROIPage() {
                 <input
                   value={majorText}
                   onChange={(e) => setMajorText(e.target.value)}
-                  placeholder='e.g., "Computer Science", "Accounting", "Nursing"'
+                  placeholder='e.g., "Accounting", "Computer Science", "Medical School", "Law School"'
                   className="mt-2 w-full rounded-xl border border-black/10 bg-white px-4 py-3 text-sm outline-none focus:border-black/20"
                 />
+                <div className="mt-1 text-[11px] text-black/50">
+                  Matched major: <b>{derived.major.key}</b> ({derived.warnings.majorTrack})
+                </div>
               </div>
 
               <div>
@@ -381,6 +446,9 @@ export default function ROIPage() {
                     </option>
                   ))}
                 </select>
+                <div className="mt-1 text-[11px] text-black/50">
+                  If free text matches a known major, it overrides this (prevents wrong tuition/salary pairing).
+                </div>
               </div>
 
               <div>
@@ -411,6 +479,11 @@ export default function ROIPage() {
                     </option>
                   ))}
                 </select>
+                {derived.warnings.correctedSchoolType ? (
+                  <div className="mt-1 text-[11px] text-amber-700">
+                    Auto-corrected school tier to match major track.
+                  </div>
+                ) : null}
               </div>
 
               <div className="md:col-span-2">
@@ -435,11 +508,6 @@ export default function ROIPage() {
               </div>
             </div>
 
-            <div className="mt-4 text-xs text-black/55">
-              Loaded benchmark: <b>{derived.major.key}</b> (start {money(derived.auto.startSalary)}, growth{" "}
-              {pct(derived.auto.salaryGrowth)}, AI exposure {derived.auto.aiExposure}/10) — {derived.city.notes}
-            </div>
-
             {/* Auto preview */}
             <div className="mt-4 grid gap-3 md:grid-cols-3">
               <div className="rounded-2xl border border-black/5 bg-white p-3">
@@ -447,13 +515,23 @@ export default function ROIPage() {
                 <div className="mt-1 text-sm font-semibold">{money(derived.auto.tuitionPerYear)}</div>
               </div>
               <div className="rounded-2xl border border-black/5 bg-white p-3">
-                <div className="text-xs text-black/50">Auto start salary</div>
-                <div className="mt-1 text-sm font-semibold">{money(derived.auto.startSalary)}</div>
+                <div className="text-xs text-black/50">Auto years in school</div>
+                <div className="mt-1 text-sm font-semibold">{derived.auto.yearsInSchool}</div>
               </div>
               <div className="rounded-2xl border border-black/5 bg-white p-3">
                 <div className="text-xs text-black/50">Auto living (after grad)</div>
                 <div className="mt-1 text-sm font-semibold">{money(derived.auto.livingAfterGrad)}</div>
               </div>
+            </div>
+
+            <div className="mt-4 text-xs text-black/55">
+              Loaded benchmark: <b>{derived.major.key}</b> — start salary{" "}
+              <b>
+                {derived.major.attendingStartSalary != null
+                  ? `${money(derived.auto.trainingSalary)} (training) → ${money(derived.auto.attendingStartSalary)} (attending)`
+                  : money(derived.auto.startSalary)}
+              </b>
+              , growth <b>{pct(derived.auto.salaryGrowth)}</b>, AI exposure <b>{derived.auto.aiExposure}/10</b>.
             </div>
           </div>
 
@@ -483,7 +561,7 @@ export default function ROIPage() {
                   <MoneyField label="Debt principal" value={debtPrincipal} onChange={setDebtPrincipal} />
                   <RateField label="Debt APR (e.g., 0.065)" value={debtApr} onChange={setDebtApr} />
                   <Field label="Repay years" value={repayYears} onChange={setRepayYears} />
-                  <MoneyField label="Starting salary" value={startSalary} onChange={setStartSalary} />
+                  <MoneyField label="Starting salary (or training salary)" value={startSalary} onChange={setStartSalary} />
                   <RateField label="Salary growth (e.g., 0.045)" value={salaryGrowth} onChange={setSalaryGrowth} />
                   <RateField label="Tax rate (e.g., 0.24)" value={taxRate} onChange={setTaxRate} />
                   <MoneyField label="Living after grad (annual)" value={livingAfterGrad} onChange={setLivingAfterGrad} />
@@ -505,9 +583,7 @@ export default function ROIPage() {
           <div className="mb-3 flex items-start justify-between gap-3">
             <div>
               <div className="text-sm font-semibold">Outputs</div>
-              <div className="mt-1 text-sm text-black/60">
-                2 scenarios: Base / Compression-adjusted.
-              </div>
+              <div className="mt-1 text-sm text-black/60">2 scenarios: Base / Compression-adjusted.</div>
             </div>
 
             <div className="flex items-center gap-2">
@@ -518,9 +594,7 @@ export default function ROIPage() {
                   onClick={() => setScenario(k)}
                   className={cx(
                     "h-9 rounded-xl border px-3 text-sm font-semibold",
-                    scenario === k
-                      ? "border-black bg-black text-white"
-                      : "border-black/10 bg-white hover:bg-black/5"
+                    scenario === k ? "border-black bg-black text-white" : "border-black/10 bg-white hover:bg-black/5"
                   )}
                 >
                   {k === "base" ? "Base" : "Compression"}
@@ -536,8 +610,16 @@ export default function ROIPage() {
           ) : (
             <>
               <div className="grid gap-3 md:grid-cols-2">
-                <KPI title="NPV (lifetime)" value={money(outputs?.npv)} sub="Discounted net cashflows after tax, living, and debt service." />
-                <KPI title="Break-even year" value={outputs?.breakEvenYear === "—" ? "—" : `Year ${outputs?.breakEvenYear}`} sub="First year cumulative cashflows become non-negative." />
+                <KPI
+                  title="NPV (lifetime)"
+                  value={money(outputs?.npv)}
+                  sub="Discounted net cashflows after tax, living, and debt service."
+                />
+                <KPI
+                  title="Break-even year"
+                  value={outputs?.breakEvenYear === "—" ? "—" : `Year ${outputs?.breakEvenYear}`}
+                  sub="First year cumulative cashflows become non-negative."
+                />
               </div>
 
               <div className="mt-4 rounded-2xl border border-black/5 bg-zinc-50 p-4">
@@ -550,23 +632,29 @@ export default function ROIPage() {
                   {(analysis || []).map((x, i) => (
                     <li key={i}>{x}</li>
                   ))}
-                  <li>
-                    Major intelligence notes: <span className="text-black/70">{derived.major.notes}</span>
-                  </li>
                 </ul>
               </div>
 
               <div className="mt-4 rounded-2xl border border-black/5 bg-white p-4">
                 <div className="text-xs font-semibold text-black/70">Model inputs used (this run)</div>
                 <div className="mt-3 grid gap-2 text-xs text-black/60 md:grid-cols-2">
+                  <div>Major: <b>{derived.major.key}</b></div>
+                  <div>Track: <b>{derived.major.track}</b></div>
                   <div>Tuition/yr: <b>{money(modelInputs.tuitionPerYear)}</b></div>
+                  <div>Years in school: <b>{modelInputs.yearsInSchool}</b></div>
                   <div>Start salary: <b>{money(modelInputs.startSalary)}</b></div>
+                  <div>Growth: <b>{pct(modelInputs.salaryGrowth)}</b></div>
                   <div>Living (school): <b>{money(modelInputs.livingSchool)}</b></div>
                   <div>Living (after): <b>{money(modelInputs.livingAfterGrad)}</b></div>
                   <div>Tax: <b>{pct(modelInputs.taxRate)}</b></div>
-                  <div>Growth: <b>{pct(modelInputs.salaryGrowth)}</b></div>
                   <div>AI exposure: <b>{modelInputs.aiExposure}/10</b></div>
                   <div>Discount: <b>{pct(modelInputs.discountRate)}</b></div>
+                  {modelInputs.trainingYears > 0 ? (
+                    <>
+                      <div>Training years: <b>{modelInputs.trainingYears}</b></div>
+                      <div>Training salary: <b>{money(modelInputs.trainingSalary)}</b></div>
+                    </>
+                  ) : null}
                 </div>
               </div>
             </>
