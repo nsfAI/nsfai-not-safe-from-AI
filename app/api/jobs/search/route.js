@@ -1,13 +1,11 @@
 // app/api/jobs/search/route.js
+import client from "../../../../lib/opensearch";
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-import client from "../../../../lib/opensearch";
-
 const INDEX = "jobs_v1";
 
-// Query-time synonyms (small + safe). You do NOT need 5000 occupations here.
-// With fuzziness + prefix + seeded titles, you’ll match most terms.
 function expandQuery(q) {
   const raw = String(q || "").trim();
   if (!raw) return { raw: "", expanded: [] };
@@ -28,12 +26,10 @@ function expandQuery(q) {
     developer: ["software", "programmer", "engineer", "swe"],
     programmer: ["software", "developer", "engineer"],
     engineer: ["engineering", "developer", "software"],
-    teacher: ["education", "instructor", "school"],
-    sales: ["account executive", "bd", "business development", "revenue"],
-    marketing: ["growth", "brand", "content", "performance marketing"],
-    legal: ["attorney", "lawyer", "paralegal", "compliance"],
-    realestate: ["real estate", "realtor", "property", "leasing"],
     banking: ["bank", "finance", "credit", "loan"],
+    "real estate": ["realtor", "property", "leasing"],
+    realtor: ["real estate", "property", "leasing"],
+    teacher: ["education", "instructor", "school"],
   };
 
   const tokens = lower.split(/\s+/g).filter(Boolean);
@@ -43,10 +39,6 @@ function expandQuery(q) {
     const hits = expansions[t];
     if (hits) hits.forEach((x) => expandedSet.add(x));
   }
-
-  // handle common multi token
-  const collapsed = lower.replace(/\s+/g, "");
-  if (expansions[collapsed]) expansions[collapsed].forEach((x) => expandedSet.add(x));
   if (expansions[lower]) expansions[lower].forEach((x) => expandedSet.add(x));
 
   return { raw, expanded: Array.from(expandedSet).slice(0, 12) };
@@ -55,26 +47,33 @@ function expandQuery(q) {
 export async function GET(request) {
   try {
     const { searchParams } = new URL(request.url);
-
     const q = searchParams.get("q") || "";
     const limit = Math.min(Number(searchParams.get("limit") || 25), 50);
     const scenario = searchParams.get("scenario") || "moderate";
 
+    // Fast check: index exists?
+    const existsResp = await client.indices.exists({ index: INDEX });
+    const indexExists = existsResp?.body ?? existsResp; // some clients return boolean in body
+    if (!indexExists) {
+      return Response.json(
+        { ok: false, error: `Index not found: ${INDEX}. Run /api/jobs/seed?n=5000 first.` },
+        { status: 200 }
+      );
+    }
+
     const { raw, expanded } = expandQuery(q);
     const hasQuery = raw.trim().length > 0;
 
-    // scenario multiplier on resilience weight
     const scenarioWeight =
       scenario === "aggressive" ? 1.15 : scenario === "conservative" ? 0.9 : 1.0;
 
     const should = [];
 
     if (hasQuery) {
-      // fuzzy relevance
       should.push({
         multi_match: {
           query: raw,
-          fields: ["title^6", "company^2", "location^2", "description"],
+          fields: ["title^5", "company^2", "location^2", "description"],
           type: "best_fields",
           operator: "or",
           fuzziness: "AUTO",
@@ -83,51 +82,25 @@ export async function GET(request) {
         },
       });
 
-      // prefix-ish behavior (finance -> financi*)
       should.push({
         multi_match: {
           query: raw,
-          fields: ["title^6", "company^2", "location^2", "description"],
+          fields: ["title^5", "company^2", "location^2", "description"],
           type: "bool_prefix",
         },
       });
 
-      // expansions
       for (const e of expanded) {
         should.push({
           multi_match: {
             query: e,
-            fields: ["title^6", "company^2", "location^2", "description"],
+            fields: ["title^5", "company^2", "location^2", "description"],
             type: "best_fields",
             operator: "or",
           },
         });
       }
     }
-
-    // IMPORTANT: No script_score (hosted providers often block it).
-    // We approximate employer_ai_risk penalty with tiers:
-    // low risk boost, medium neutral, high risk penalty
-    const functions = [
-      {
-        field_value_factor: {
-          field: "resilience_score",
-          factor: 0.06 * scenarioWeight,
-          missing: 0,
-        },
-      },
-      {
-        field_value_factor: {
-          field: "compression_stability",
-          factor: 0.8,
-          missing: 0,
-        },
-      },
-      // employer_ai_risk tiers
-      { filter: { range: { employer_ai_risk: { lte: 0.25 } } }, weight: 1.12 },
-      { filter: { range: { employer_ai_risk: { gt: 0.25, lte: 0.6 } } }, weight: 1.0 },
-      { filter: { range: { employer_ai_risk: { gt: 0.6 } } }, weight: 0.82 },
-    ];
 
     const body = {
       size: limit,
@@ -136,15 +109,35 @@ export async function GET(request) {
         ? {
             function_score: {
               query: { bool: { should, minimum_should_match: 1 } },
-              functions,
+              functions: [
+                {
+                  field_value_factor: {
+                    field: "resilience_score",
+                    factor: 0.06 * scenarioWeight,
+                    missing: 0,
+                  },
+                },
+                {
+                  field_value_factor: {
+                    field: "compression_stability",
+                    factor: 0.8,
+                    missing: 0,
+                  },
+                },
+                {
+                  script_score: {
+                    script: {
+                      source:
+                        "double r = (doc.containsKey('employer_ai_risk') && !doc['employer_ai_risk'].empty) ? doc['employer_ai_risk'].value : 0.0; return 1.0 - Math.min(0.85, r);",
+                    },
+                  },
+                },
+              ],
               score_mode: "sum",
               boost_mode: "multiply",
             },
           }
-        : {
-            // empty search => “browse” view
-            match_all: {},
-          },
+        : { match_all: {} },
       sort: hasQuery
         ? ["_score"]
         : [{ resilience_score: "desc" }, { posted_ts: "desc" }],
@@ -152,8 +145,11 @@ export async function GET(request) {
 
     const resp = await client.search({ index: INDEX, body });
 
-    const hits = resp?.body?.hits?.hits || [];
-    const total = resp?.body?.hits?.total?.value ?? hits.length;
+    const hits = resp?.body?.hits?.hits || resp?.hits?.hits || [];
+    const total =
+      resp?.body?.hits?.total?.value ??
+      resp?.hits?.total?.value ??
+      hits.length;
 
     const results = hits.map((h) => {
       const src = h?._source || {};
@@ -173,22 +169,10 @@ export async function GET(request) {
       };
     });
 
-    return Response.json({
-      ok: true,
-      query: raw,
-      expanded,
-      scenario,
-      total,
-      results,
-    });
+    return Response.json({ ok: true, query: raw, expanded, scenario, total, results });
   } catch (e) {
     return Response.json(
-      {
-        ok: false,
-        error: e?.message || "Search failed",
-        hint:
-          "If this is production, confirm OPENSEARCH_URL is set on Vercel and your index exists (jobs_v1).",
-      },
+      { ok: false, error: e?.message || "Search failed" },
       { status: 200 }
     );
   }
