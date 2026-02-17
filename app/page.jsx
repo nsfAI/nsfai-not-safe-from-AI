@@ -173,7 +173,7 @@ export default function Page() {
               href="/jobs"
               className="rounded-xl border border-black/10 bg-white px-3 py-2 text-sm shadow-sm hover:bg-neutral-50"
             >
-              AI Job Finder
+              AI Resilient Jobs
             </a>
 
             <button

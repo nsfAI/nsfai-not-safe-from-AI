@@ -1,28 +1,35 @@
 // app/api/jobs/search/route.js
 import client from "../../../../lib/opensearch";
 
+export const dynamic = "force-dynamic";
+
 const INDEX = "jobs_v1";
 
+// Small query expansion map (query-time synonyms, no reindex needed)
 function expandQuery(q) {
   const raw = String(q || "").trim();
   if (!raw) return { raw: "", expanded: [] };
 
   const lower = raw.toLowerCase();
 
+  // Add/extend over time based on what users type
   const expansions = {
-    finance: ["financial", "financing", "fp&a", "accounting", "analyst"],
-    financial: ["finance", "fp&a", "analyst"],
-    accounting: ["accountant", "cpa", "audit", "bookkeeper", "controller"],
-    accountant: ["accounting", "cpa", "audit", "bookkeeper", "controller"],
+    finance: ["financial", "financing", "fp&a", "accounting", "analyst", "banking"],
+    financial: ["finance", "fp&a", "analyst", "accounting"],
+    accounting: ["accountant", "cpa", "audit", "bookkeeper", "controller", "tax"],
+    accountant: ["accounting", "cpa", "audit", "bookkeeper", "controller", "tax"],
+
     nurse: ["nursing", "rn", "bsn", "lpn"],
     nursing: ["nurse", "rn", "bsn", "lpn"],
     doctor: ["physician", "medicine", "md", "clinical"],
     dentist: ["dental", "dds", "dmd"],
     pharmacist: ["pharmacy", "pharmd"],
+
     software: ["developer", "programmer", "engineer", "swe"],
     developer: ["software", "programmer", "engineer", "swe"],
     programmer: ["software", "developer", "engineer"],
-    engineer: ["engineering", "developer", "software"],
+    engineer: ["engineering", "developer", "software", "swe"],
+
     banking: ["bank", "finance", "credit", "loan"],
     real: ["real estate", "realtor", "property"],
     teacher: ["education", "instructor", "school"],
@@ -35,12 +42,31 @@ function expandQuery(q) {
     const hits = expansions[t];
     if (hits) hits.forEach((x) => expandedSet.add(x));
   }
+
   if (expansions[lower]) expansions[lower].forEach((x) => expandedSet.add(x));
 
+  // Keep it tight
   return { raw, expanded: Array.from(expandedSet).slice(0, 12) };
 }
 
+function safeNum(n, fallback = 0) {
+  const x = Number(n);
+  return Number.isFinite(x) ? x : fallback;
+}
+
 export async function GET(request) {
+  // ✅ Vercel safety: don’t crash prod if OPENSEARCH_URL isn’t configured
+  if (!process.env.OPENSEARCH_URL && process.env.VERCEL) {
+    return Response.json(
+      {
+        ok: false,
+        error:
+          "Jobs search is not configured in production yet (missing OPENSEARCH_URL). It works locally with Docker OpenSearch.",
+      },
+      { status: 200 }
+    );
+  }
+
   const { searchParams } = new URL(request.url);
 
   const q = searchParams.get("q") || "";
@@ -50,16 +76,18 @@ export async function GET(request) {
   const { raw, expanded } = expandQuery(q);
   const hasQuery = raw.trim().length > 0;
 
+  // Scenario weight (simple V1)
   const scenarioWeight =
     scenario === "aggressive" ? 1.15 : scenario === "conservative" ? 0.9 : 1.0;
 
   const should = [];
 
   if (hasQuery) {
+    // 1) Best-fields fuzzy match (handles typos)
     should.push({
       multi_match: {
         query: raw,
-        fields: ["title^5", "company^2", "location^2", "description"],
+        fields: ["title^6", "company^2", "location^2", "description"],
         type: "best_fields",
         operator: "or",
         fuzziness: "AUTO",
@@ -68,19 +96,21 @@ export async function GET(request) {
       },
     });
 
+    // 2) Prefix behavior (finance -> financi*)
     should.push({
       multi_match: {
         query: raw,
-        fields: ["title^5", "company^2", "location^2", "description"],
+        fields: ["title^6", "company^2", "location^2", "description"],
         type: "bool_prefix",
       },
     });
 
+    // 3) Expanded synonyms (accountant -> accounting, cpa, audit...)
     for (const e of expanded) {
       should.push({
         multi_match: {
           query: e,
-          fields: ["title^5", "company^2", "location^2", "description"],
+          fields: ["title^6", "company^2", "location^2", "description"],
           type: "best_fields",
           operator: "or",
         },
@@ -94,7 +124,13 @@ export async function GET(request) {
     query: hasQuery
       ? {
           function_score: {
-            query: { bool: { should, minimum_should_match: 1 } },
+            query: {
+              bool: {
+                should,
+                minimum_should_match: 1,
+              },
+            },
+            // Blend text relevance with resilience signals
             functions: [
               {
                 field_value_factor: {
@@ -111,6 +147,7 @@ export async function GET(request) {
                 },
               },
               {
+                // penalize high employer AI risk
                 script_score: {
                   script: {
                     source:
@@ -123,7 +160,9 @@ export async function GET(request) {
             boost_mode: "multiply",
           },
         }
-      : { match_all: {} },
+      : {
+          match_all: {},
+        },
     sort: hasQuery
       ? ["_score"]
       : [{ resilience_score: "desc" }, { posted_ts: "desc" }],
@@ -131,30 +170,29 @@ export async function GET(request) {
 
   const resp = await client.search({ index: INDEX, body });
 
-  // ✅ Compatible across client versions
+  // Compatible across client versions
   const hits = resp?.body?.hits?.hits || resp?.hits?.hits || [];
   const total =
     resp?.body?.hits?.total?.value ??
     resp?.hits?.total?.value ??
     hits.length;
 
-  // ✅ THIS IS THE CRITICAL FIX:
-  // Always return flat job objects, never raw OpenSearch hits
+  // Always return flat job objects
   const results = hits.map((h) => {
     const src = h?._source || {};
     return {
       id: h?._id,
-      title: src.title ?? null,
-      company: src.company ?? null,
-      location: src.location ?? null,
-      description: src.description ?? null,
-      url: src.url ?? null,
+      title: src.title ?? "Untitled role",
+      company: src.company ?? "Unknown company",
+      location: src.location ?? "",
+      description: src.description ?? "",
+      url: src.url ?? "",
       posted_ts: src.posted_ts ?? null,
-      resilience_score: src.resilience_score ?? 0,
+      resilience_score: safeNum(src.resilience_score, 0),
       resilience_reason: src.resilience_reason ?? "Resilience signal pending.",
       score_version: src.score_version ?? "v1",
-      compression_stability: src.compression_stability ?? 0,
-      employer_ai_risk: src.employer_ai_risk ?? 0,
+      compression_stability: safeNum(src.compression_stability, 0),
+      employer_ai_risk: safeNum(src.employer_ai_risk, 0),
     };
   });
 
