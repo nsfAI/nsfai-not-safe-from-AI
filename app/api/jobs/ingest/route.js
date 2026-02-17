@@ -3,6 +3,7 @@ import client from "../../../../lib/opensearch";
 import { scoreResilience } from "../../../jobs/jobScoring";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 const INDEX = "jobs_v1";
 
