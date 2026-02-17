@@ -1,7 +1,7 @@
 // app/api/labor/route.js
 // Pulls (1) BLS unemployment rate (monthly) and (2) Layoffs.fyi latest posts (daily-ish proxy)
 
-export const revalidate = 60 * 30; // 30 min cache
+export const revalidate = 3600; // 1 hour
 
 function safeText(s) {
   return String(s ?? "").replace(/\s+/g, " ").trim();
