@@ -176,6 +176,14 @@ export default function Page() {
               AI Resilient Jobs
             </a>
 
+            {/* ✅ NEW: Vector */}
+            <a
+              href="/vector"
+              className="rounded-xl border border-black/10 bg-white px-3 py-2 text-sm shadow-sm hover:bg-neutral-50"
+            >
+              NSFAI Vector
+            </a>
+
             <button
               onClick={resetAll}
               className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-black/90"
